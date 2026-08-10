@@ -171,6 +171,91 @@ function Resolve-OutputEncoding {
     return (New-Object System.Text.UTF8Encoding($false))
 }
 
+# ---------------------------------------------------------------------------
+# Bulk data helpers
+#
+# These exist because a 55 MB merge used to take over five minutes, almost all of
+# it in one line. See Get-SortedDataRows.
+# ---------------------------------------------------------------------------
+
+function Read-DataFileLines {
+    param([string]$Path)
+    # Markedly faster than Get-Content, which wraps every line in a PSObject and
+    # attaches note properties. On a 20,000-row file of 2.7 KB rows that overhead
+    # is most of the read time.
+    return [System.IO.File]::ReadAllLines($Path)
+}
+
+function Get-SortedDataRows {
+    param([System.Collections.Generic.HashSet[string]]$Rows)
+
+    $values = New-Object 'string[]' $Rows.Count
+    $Rows.CopyTo($values)
+
+    # An ordinal sort of the whole row. The timestamp is the leading field and is
+    # fixed width in TOA5, so this orders by timestamp exactly - and breaks ties
+    # on the rest of the row rather than leaving equal-timestamp rows in an
+    # arbitrary order, so repeated runs produce identical output.
+    #
+    # What this replaces:
+    #
+    #     $currentData | Sort-Object { ($_ -split ',')[0] }
+    #
+    # which split every row into all of its fields (275 of them on an SAA table)
+    # just to read the first one, and paid PowerShell pipeline overhead on every
+    # comparison. On a 55 MB merge that single line was the five minutes. This is
+    # one .NET call with no per-row PowerShell work.
+    [Array]::Sort($values, [System.StringComparer]::Ordinal)
+    return $values
+}
+
+# ---------------------------------------------------------------------------
+# Reassurance for long merges
+#
+# A big merge looks indistinguishable from a hang, and someone killing it part
+# way is how a primary file gets destroyed. After SLOW_HINT_SECONDS, say what is
+# happening and name a file whose size actually moves.
+# ---------------------------------------------------------------------------
+
+$script:MergeStopwatch = $null
+$script:SlowHintShown = $false
+
+function Start-MergeTimer {
+    $script:MergeStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $script:SlowHintShown = $false
+}
+
+function Show-SlowHintIfNeeded {
+    # The threshold is a parameter default rather than a script-level variable on
+    # purpose. As a loose variable it could fall out of scope, and then
+    # `elapsed -lt $null` compares against 0, which is always false - so the hint
+    # would fire on every merge instead of only slow ones. A default cannot be
+    # undefined.
+    param(
+        [string]$WatchPath,
+        [double]$AfterSeconds = 15
+    )
+
+    if ($script:SlowHintShown -or -not $script:MergeStopwatch) { return }
+    if ($script:MergeStopwatch.Elapsed.TotalSeconds -lt $AfterSeconds) { return }
+    $script:SlowHintShown = $true
+
+    Write-Host ''
+    Write-Host '  ---------------------------------------------------------------' -ForegroundColor Yellow
+    Write-Host '  Still working. Large files take a while - this is not stuck.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '  To confirm it is progressing, open the folder in Explorer and' -ForegroundColor Yellow
+    Write-Host '  press F5. This working file should be growing:' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host "      $WatchPath" -ForegroundColor Cyan
+    Write-Host ''
+    Write-Host '  It replaces the primary only when the merge finishes, so the' -ForegroundColor Yellow
+    Write-Host '  primary will NOT change size until then. Closing this window now' -ForegroundColor Yellow
+    Write-Host '  leaves the primary untouched.' -ForegroundColor Yellow
+    Write-Host '  ---------------------------------------------------------------' -ForegroundColor Yellow
+    Write-Host ''
+}
+
 function Select-FileDialog {
     param(
         [string]$Title,
@@ -850,7 +935,8 @@ function Invoke-CombineForPrimary {
         return $result
     }
 
-    $linesPrimary = Get-Content $PrimaryPath
+    Start-MergeTimer
+    $linesPrimary = Read-DataFileLines $PrimaryPath
     if ($linesPrimary.Count -lt 2) {
         Write-Warning "Primary '$PrimaryPath' needs at least 2 lines. Skipping."
         return $result
@@ -867,10 +953,12 @@ function Invoke-CombineForPrimary {
     $originalSpecials = if ($specialCountPrimary -gt 0) { $linesPrimary[1..$specialCountPrimary] } else { @() }
     $dataStartIndex = $specialCountPrimary + 1
     $currentData = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    if ($linesPrimary.Count -gt $dataStartIndex) {
-        foreach ($line in $linesPrimary[$dataStartIndex..($linesPrimary.Count - 1)]) {
-            if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$currentData.Add($line) }
-        }
+    # Indexed loop rather than $linesPrimary[$dataStartIndex..($count-1)]: the
+    # range operator copies the whole tail of the array first, which on a 20,000
+    # row file of wide rows is a pointless second copy of the file.
+    for ($i = $dataStartIndex; $i -lt $linesPrimary.Count; $i++) {
+        $line = $linesPrimary[$i]
+        if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$currentData.Add($line) }
     }
 
     $primaryName = [System.IO.Path]::GetFileName($PrimaryPath)
@@ -897,7 +985,7 @@ function Invoke-CombineForPrimary {
         }
 
         $secondaryName = [System.IO.Path]::GetFileName($secondaryPath)
-        $secondaryLines = Get-Content $secondaryPath
+        $secondaryLines = Read-DataFileLines $secondaryPath
 
         if ($secondaryLines.Count -lt 2) {
             Write-Warning "Skipping - file needs at least 2 lines (header + data)."
@@ -972,25 +1060,64 @@ function Invoke-CombineForPrimary {
         foreach ($line in $data2) {
             if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$currentData.Add($line) }
         }
+        Show-SlowHintIfNeeded -WatchPath "$PrimaryPath.combining.tmp"
         $rowsAdded = $currentData.Count - $rowsBefore
         $totalRowsAdded += $rowsAdded
 
         Write-Host "Added $rowsAdded new unique row(s). Total: $($currentData.Count)" -ForegroundColor Green
 
         # Write updated primary and move secondary to backup
+        $tempPath = $null
         try {
-            $sortedData = $currentData | Sort-Object {
-                $fields = $_ -split ','
-                if ($fields.Count -gt 0) { $fields[0] } else { $_ }
-            }
+            Show-SlowHintIfNeeded -WatchPath "$PrimaryPath.combining.tmp"
+            Write-Host "Sorting $($currentData.Count) rows..." -ForegroundColor DarkGray
+            $sortedData = Get-SortedDataRows -Rows $currentData
 
-            $outputLines = @($originalHeader) + $originalSpecials + $sortedData
             # Written with an explicit .NET encoding rather than
             # Set-Content -Encoding, whose 'UTF8' means with-BOM on PowerShell
             # 5.1 and without-BOM on 7. A stray BOM stops LoggerNet recognising
             # the file and makes it abandon it -- see Resolve-OutputEncoding.
             $enc = Resolve-OutputEncoding -Name $Encoding -FilePath $PrimaryPath
-            [System.IO.File]::WriteAllLines($PrimaryPath, [string[]]$outputLines, $enc)
+
+            # Streamed into a temp file and moved into place, rather than written
+            # straight over the primary. Two reasons:
+            #   1. Killing the script mid-write can no longer truncate the
+            #      primary. Previously one interrupted WriteAllLines destroyed it.
+            #   2. The temp file visibly grows, so there is something to watch
+            #      when a merge is slow. The primary changes only at the very end,
+            #      in one atomic move.
+            $tempPath = "$PrimaryPath.combining.tmp"
+            $written = 0
+            # 1 MB buffer, explicitly. These files live on a network share, and
+            # StreamWriter's default buffer is a few KB - smaller than a single
+            # 275-column SAA row, so every WriteLine would become its own SMB
+            # round-trip. Batching into 1 MB writes turns ~38,000 round-trips into
+            # ~50, which over a VPN link is the difference between minutes and
+            # seconds.
+            $writer = New-Object System.IO.StreamWriter($tempPath, $false, $enc, 1048576)
+            try {
+                $writer.WriteLine($originalHeader)
+                foreach ($special in $originalSpecials) { $writer.WriteLine($special) }
+                foreach ($row in $sortedData) {
+                    $writer.WriteLine($row)
+                    $written++
+                    if (($written % 2000) -eq 0) {
+                        # Flushed so the size on disk actually moves for anyone
+                        # watching, and so Write-Progress has something to report.
+                        $writer.Flush()
+                        Show-SlowHintIfNeeded -WatchPath $tempPath
+                        Write-Progress -Activity "Writing $primaryName" `
+                            -Status "$written of $($sortedData.Count) rows" `
+                            -PercentComplete (100 * $written / [Math]::Max($sortedData.Count, 1))
+                    }
+                }
+            } finally {
+                $writer.Dispose()
+                Write-Progress -Activity "Writing $primaryName" -Completed
+            }
+
+            Move-Item -LiteralPath $tempPath -Destination $PrimaryPath -Force -ErrorAction Stop
+            $tempPath = $null
 
             $backupPath = Join-Path $backupFolder $secondaryName
             if (Test-Path $backupPath) {
@@ -1007,7 +1134,12 @@ function Invoke-CombineForPrimary {
         }
         catch {
             Write-Error "Failed to update files for $secondaryPath : $_"
-            Write-Warning "Primary file may be partially updated. Check backup if needed."
+            # The primary is only ever replaced by an atomic move, so a failure
+            # here leaves it exactly as it was. Clear away the partial temp file.
+            if ($tempPath -and (Test-Path -LiteralPath $tempPath)) {
+                Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
+            }
+            Write-Warning "Primary left unchanged. The secondary was not moved."
             continue
         }
     }

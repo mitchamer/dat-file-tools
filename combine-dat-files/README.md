@@ -182,6 +182,61 @@ The banner is green when values are identical, red when they differ.
 .\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding Auto
 ```
 
+## Speed, and what to do while it runs
+
+A 55 MB merge used to take over five minutes. Measured on 38,000 rows of a
+275-column SAA table:
+
+| Phase | Before | After |
+|---|---|---|
+| read a 38 MB file | 0.80 s (`Get-Content`) | 0.40 s (`ReadAllLines`) |
+| sort 38,000 rows | 2.40 s | **0.09 s** |
+| everything else per phase | — | under 0.1 s |
+
+The sort was the hot spot. It was:
+
+```powershell
+$currentData | Sort-Object { ($_ -split ',')[0] }
+```
+
+which split each row into all 275 of its fields to read the first one, and paid
+PowerShell pipeline overhead on every comparison. It is now a single
+`[Array]::Sort` with an ordinal comparer — 26× faster, and deterministic, because
+rows sharing a timestamp are now ordered by the rest of the row instead of
+arbitrarily.
+
+**On a network share, the writing dominates.** These files usually live on a UNC
+path, and the output is now written through a 1 MB buffer. `StreamWriter`'s
+default buffer is a few KB — smaller than one SAA row — which would make every
+row its own SMB round-trip. Batching turns ~38,000 round-trips into ~50.
+
+If a merge is still slow, the remaining cost is the link itself: a 55 MB merge
+reads ~105 MB and writes ~50 MB. Copying the folder to a local disk, merging
+there, and copying back is often faster than merging in place over a VPN. To see
+what you are working with:
+
+```powershell
+Measure-Command { $null = [IO.File]::ReadAllBytes('\\share\path\YourFile.dat') }
+```
+
+### It tells you when it is taking a while
+
+After 15 seconds the script prints a note naming a file to watch:
+
+```
+Still working. Large files take a while - this is not stuck.
+...
+    \\share\path\YourFile.dat.combining.tmp
+```
+
+That is the real working file. The output is streamed into
+`<primary>.combining.tmp` and moved into place atomically at the very end, so:
+
+- refreshing Explorer (F5) shows **the temp file** growing — the primary does not
+  change size until the merge completes
+- closing the window part-way leaves the primary **untouched**, which was not true
+  before: an interrupted write used to truncate it
+
 ### Fixed: merging used to make LoggerNet abandon the file
 
 Earlier versions defaulted to `-Encoding UTF8` via `Set-Content`, which **under
