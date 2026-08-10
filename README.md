@@ -1,26 +1,32 @@
-# dat-file-tools — Combine Time Series Files
+# dat-file-tools
 
-Combines LoggerNet / TOA5-style time-series data files (`.dat` / `.csv` / `.txt`)
-and their backups into a single file, with a visual header comparison before each
-merge. Built for Campbell Scientific datalogger output, where the same table ends
-up split across collected files, `.bak`/`.backup` duplicates, and timestamped
-CardConvert downloads.
+PowerShell tools for managing Campbell Scientific / LoggerNet TOA5 time-series
+files (`.dat` / `.csv` / `.txt`) — the kind of housekeeping that piles up when the
+same logger table arrives from collection, card downloads, and backups all at
+once.
 
-Windows PowerShell 5.1 or later (PowerShell 7 works). Uses Windows Forms dialogs,
-so it is Windows-only.
+Windows PowerShell 5.1 or later (PowerShell 7 works). Both tools use Windows
+Forms dialogs, so they are Windows-only.
+
+| Tool | Does | Docs |
+|---|---|---|
+| **Combine DAT files** (`Combine DAT files_v9.ps1`) | Merges a table's duplicates — `.bak`/`.backup` copies and timestamped CardConvert downloads — into one file, with a header comparison you approve before anything is written | [`SCRIPT_README.txt`](SCRIPT_README.txt) |
+| **Decimate** (`Decimate_v2.ps1`) | Thins a file to rows landing exactly on the hour, every six hours, or daily. Backs up the full dataset first | [`Decimate_v2_README.txt`](Decimate_v2_README.txt) |
 
 ## ⚠ Use at your own risk
 
-**This tool modifies and moves your data files. Run it on copies until you trust
-it, and keep independent backups of anything you cannot regenerate.**
+**Both tools rewrite your data files in place. Run them on copies until you trust
+them, and keep independent backups of anything you cannot regenerate.**
 
-It is provided "as is", with **no warranty of any kind** — see sections 15 and 16
-of [LICENSE](LICENSE) (GPL-3.0) for the formal terms. You are responsible for
-verifying the merged output before relying on it for analysis, reporting, or any
-decision. The authors accept no liability for lost, altered, or corrupted data.
+They are provided "as is", with **no warranty of any kind** — see sections 15 and
+16 of [LICENSE](LICENSE) (GPL-3.0) for the formal terms. You are responsible for
+verifying output before relying on it for analysis, reporting, or any decision.
+The authors accept no liability for lost, altered, or corrupted data.
 
-Specifically, a merge is **destructive**, and these are the behaviours to
-understand before pointing it at anything you care about:
+### Combine DAT files
+
+A merge is **destructive**, and these are the behaviours to understand before
+pointing it at anything you care about:
 
 - **The primary file is rewritten in place.** Header and special rows are
   preserved, but the data section is replaced with the merged, de-duplicated,
@@ -43,12 +49,40 @@ The header-comparison dialogs exist precisely because these operations cannot be
 undone automatically. Read them rather than clicking through — declining a single
 file is cheap, and un-merging one is not.
 
-### Before you run it on real data
+### Decimate
+
+Decimation is **lossy by definition** — discarded rows survive only in the backup
+copy. The failure modes are different from the combine tool's:
+
+- **Rows must land exactly on the interval.** Hourly keeps only rows where minute
+  *and* second are `0`. Data logged at `:05`, `:07`, `:15` matches nothing, so
+  **every data row is dropped** and you are left with the headers plus any
+  `-RetainParam` rows. Check your logging interval and offset before running —
+  this is the way to empty a file in one go.
+- **Timestamps must be exactly `yyyy-MM-dd HH:mm:ss`, in the first column.** Rows
+  that fail to parse are kept and reported, so a file in another format is not
+  damaged — but nothing is thinned either, which is a silent no-op.
+- **No backup is created if the input is already inside a `Backup` folder** — and
+  the file is still overwritten. Do not re-run this on its own output.
+- **The original filename is kept**, so a thinned file looks identical to a full
+  one. The full copy lands at `Backup\<name>_fulldataset<ext>`.
+- **Output is written as UTF-8** regardless of the input encoding.
+- If the very first row happens to parse as a timestamp, header detection finds no
+  headers and falls back to assuming 2 — so the first two data rows are treated as
+  headers and always retained.
+
+On failure the original is left untouched and temporary files are cleaned up.
+
+### Before you run either on real data
 
 1. Copy a representative folder somewhere scratch and run it there first.
-2. Confirm the row count and time range of the merged file are what you expect.
+2. Confirm the row count and time range of the result are what you expect.
 3. Check the `Backup` folder contains what you think it should.
-4. Only then run it against live data, and leave `-NoBackup` alone.
+4. Only then run against live data — and leave `-NoBackup` alone.
+
+---
+
+# Combine DAT files
 
 ## Why
 
@@ -142,6 +176,58 @@ pre-merge backup is removed.
 
 A screen-recorded walkthrough ships with the internal copy of this package but is
 not in the repository — it is far past GitHub's file size limit.
+
+---
+
+# Decimate
+
+## Why
+
+Long records get unwieldy: a 15-minute logger produces ~35,000 rows a year, and
+for a trend plot or a report you often want hourly or daily. Decimate keeps the
+rows that sit on a clean interval and sets the full dataset aside, so the file
+stays under its original name while the complete record remains recoverable.
+
+## Running it
+
+Interactively, it asks for the mode and the retain count, then opens a file
+picker (multi-select):
+
+```powershell
+.\Decimate_v2.ps1
+```
+
+At the prompts: `1` = hourly (default), `6` = six-hourly, `24` = daily. The
+retain count keeps the first N valid data rows regardless of their timestamp —
+useful for SAA files whose initialisation rows matter.
+
+Non-interactively:
+
+```powershell
+.\Decimate_v2.ps1 -ModeParam Hourly -RetainParam 5 `
+                  -FilesParam "C:\Data\Station1.csv","C:\Data\Station2.dat"
+```
+
+| Option | Effect |
+|---|---|
+| `-ModeParam` | `Hourly` \| `SixHourly` \| `Daily` |
+| `-RetainParam <int>` | Keep the first N valid data rows regardless of interval (`0` disables) |
+| `-FilesParam <paths>` | One or more files; skips the picker |
+
+## What it keeps
+
+| Mode | Rows kept |
+|---|---|
+| `Hourly` | `HH:00:00` |
+| `SixHourly` | `00:00:00`, `06:00:00`, `12:00:00`, `18:00:00` |
+| `Daily` | `00:00:00` |
+
+Header rows are found by scanning down from the top until a first column parses
+as `yyyy-MM-dd HH:mm:ss`, and everything above that is preserved as-is. The
+original is copied to `Backup\<name>_fulldataset<ext>` before the thinned version
+takes its place under the original name.
+
+Full reference: [`Decimate_v2_README.txt`](Decimate_v2_README.txt).
 
 ## Licence and warranty
 
