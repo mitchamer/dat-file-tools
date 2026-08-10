@@ -1,23 +1,34 @@
 Windows Registry Editor Version 5.00
 
+; EDIT THE PATHS BELOW BEFORE RUNNING THIS FILE.
+; Replace C:\\Script\\combine-dat-files\\ with wherever this folder actually
+; lives on your machine, in every line. Note that .reg files require each
+; backslash to be doubled.
+;
+; Install-ContextMenu.ps1 is preferred over this file: it needs no admin rights,
+; works out its own location so there is nothing to edit, and registers per-user
+; instead of machine-wide.
+
 ; Right-click a FILE -> use it as the PRIMARY file (direct mode)
 [HKEY_CLASSES_ROOT\*\shell\CombineDATFiles]
 @="Combine Time Series Files_v9"
+"Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\*\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\Combine DAT files_v9.ps1\" \"%1\""
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%1\""
 
 ; Right-click a FOLDER -> scan that folder in FOLDER MODE (auto-group duplicates)
 [HKEY_CLASSES_ROOT\Directory\shell\CombineDATFiles]
 @="Combine Time Series Files_v9 (scan folder)"
+"Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\Directory\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\Combine DAT files_v9.ps1\" \"%1\""
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%1\""
 
 ; Right-click the FOLDER BACKGROUND (empty space inside a folder) -> scan current folder
 [HKEY_CLASSES_ROOT\Directory\Background\shell\CombineDATFiles]
 @="Combine Time Series Files_v9 (scan this folder)"
+"Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\Directory\Background\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\Combine DAT files_v9.ps1\" \"%V\""
-
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%V\""

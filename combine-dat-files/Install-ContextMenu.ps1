@@ -46,6 +46,18 @@ $menuLabel = 'Combine Time Series Files'
 $cmdFile = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$target`" `"%1`""
 $cmdBg = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$target`" `"%V`""
 
+# Menu icon, shipped beside this installer. Quoted because the package folder can
+# sit in a path containing spaces. Optional: if the .ico is missing (someone
+# copied out just the script), the entries are still registered without an icon
+# rather than the install failing over decoration.
+$iconPath = Join-Path $scriptDir 'CombineDatFiles.ico'
+$iconValue = $null
+if (Test-Path -LiteralPath $iconPath) {
+    $iconValue = "`"$iconPath`""
+} else {
+    Write-Warning "CombineDatFiles.ico not found next to this installer - entries will have no icon."
+}
+
 # Use the .NET registry API directly so the literal "*" class key is not treated
 # as a wildcard (which the PowerShell registry provider would try to expand).
 $rootKey = if ($AllUsers) { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
@@ -56,11 +68,14 @@ function Set-ContextEntry {
         [Microsoft.Win32.RegistryKey]$RootKey,
         [string]$SubPath,   # e.g. '*\shell\CombineDATFiles'
         [string]$Label,
-        [string]$Command
+        [string]$Command,
+        [string]$Icon
     )
     $key = $RootKey.CreateSubKey($SubPath)
     try {
         $key.SetValue('', $Label)
+        # 'Icon' belongs on the verb key itself, not on its command subkey.
+        if ($Icon) { $key.SetValue('Icon', $Icon) }
         $cmd = $key.CreateSubKey('command')
         try { $cmd.SetValue('', $Command) } finally { $cmd.Dispose() }
     }
@@ -70,10 +85,14 @@ function Set-ContextEntry {
 
 $scope = if ($AllUsers) { 'HKLM (all users)' } else { 'HKCU (current user)' }
 Write-Host "Installing context-menu entries under $scope ..." -ForegroundColor Cyan
-Set-ContextEntry -RootKey $rootKey -SubPath "$base\*\shell\CombineDATFiles"                    -Label $menuLabel                      -Command $cmdFile
-Set-ContextEntry -RootKey $rootKey -SubPath "$base\Directory\shell\CombineDATFiles"           -Label "$menuLabel (scan folder)"      -Command $cmdFile
-Set-ContextEntry -RootKey $rootKey -SubPath "$base\Directory\Background\shell\CombineDATFiles" -Label "$menuLabel (scan this folder)" -Command $cmdBg
+Set-ContextEntry -RootKey $rootKey -SubPath "$base\*\shell\CombineDATFiles"                    -Label $menuLabel                      -Command $cmdFile -Icon $iconValue
+Set-ContextEntry -RootKey $rootKey -SubPath "$base\Directory\shell\CombineDATFiles"           -Label "$menuLabel (scan folder)"      -Command $cmdFile -Icon $iconValue
+Set-ContextEntry -RootKey $rootKey -SubPath "$base\Directory\Background\shell\CombineDATFiles" -Label "$menuLabel (scan this folder)" -Command $cmdBg   -Icon $iconValue
 
 Write-Host "`nDone. Target script:" -ForegroundColor Green
 Write-Host "  $target"
+if ($iconValue) {
+    Write-Host "Icon:" -ForegroundColor Green
+    Write-Host "  $iconPath"
+}
 Write-Host "`nRight-click a file or folder to use it. To remove, run Uninstall-ContextMenu.ps1." -ForegroundColor Green

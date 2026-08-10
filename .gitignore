@@ -13,3 +13,6 @@
 Thumbs.db
 desktop.ini
 .vscode/
+
+# Generated preview sheets from make_icon.py experiments
+icon_preview.png
