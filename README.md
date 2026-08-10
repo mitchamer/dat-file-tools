@@ -11,7 +11,7 @@ Forms dialogs, so they are Windows-only.
 | Tool | Does | Docs |
 |---|---|---|
 | **Combine DAT files** (`Combine DAT files_v9.ps1`) | Merges a table's duplicates — `.bak`/`.backup` copies and timestamped CardConvert downloads — into one file, with a header comparison you approve before anything is written | [`SCRIPT_README.txt`](SCRIPT_README.txt) |
-| **Decimate** (`Decimate_v2.ps1`) | Thins a file to rows landing exactly on the hour, every six hours, or daily. Backs up the full dataset first | [`Decimate_v2_README.txt`](Decimate_v2_README.txt) |
+| **Decimate** (`Decimate_v3.ps1`) | Thins a file to rows landing on the hour, every six hours, or daily. Previews the row count before writing, and backs up the full dataset first | [`Decimate_v3_README.txt`](Decimate_v3_README.txt) |
 
 ## ⚠ Use at your own risk
 
@@ -54,24 +54,25 @@ file is cheap, and un-merging one is not.
 Decimation is **lossy by definition** — discarded rows survive only in the backup
 copy. The failure modes are different from the combine tool's:
 
-- **Rows must land exactly on the interval.** Hourly keeps only rows where minute
-  *and* second are `0`. Data logged at `:05`, `:07`, `:15` matches nothing, so
-  **every data row is dropped** and you are left with the headers plus any
-  `-RetainParam` rows. Check your logging interval and offset before running —
-  this is the way to empty a file in one go.
-- **Timestamps must be exactly `yyyy-MM-dd HH:mm:ss`, in the first column.** Rows
-  that fail to parse are kept and reported, so a file in another format is not
-  damaged — but nothing is thinned either, which is a silent no-op.
-- **No backup is created if the input is already inside a `Backup` folder** — and
-  the file is still overwritten. Do not re-run this on its own output.
+- **Rows must land on the interval.** Hourly keeps rows at `HH:00`, with seconds
+  zero. Data logged at `:05` or `:07` matches nothing, so thinning it would leave
+  no data at all. v3 **refuses to write** in that case and names the cause; the
+  confirmation dialog shows the before/after counts either way. `-Force`
+  overrides. Still worth knowing your logging offset before you start.
 - **The original filename is kept**, so a thinned file looks identical to a full
   one. The full copy lands at `Backup\<name>_fulldataset<ext>`.
-- **Output is written as UTF-8** regardless of the input encoding.
-- If the very first row happens to parse as a timestamp, header detection finds no
-  headers and falls back to assuming 2 — so the first two data rows are treated as
-  headers and always retained.
+- **`-NoBackup` removes your only automatic undo.**
+- **Discarded rows are gone from the working file.** The backup is the only copy.
+- **Files already inside a `Backup` folder are refused** — that is the full-dataset
+  copy, and no backup-of-the-backup would be made. `-Force` overrides.
+
+Rows whose timestamp cannot be read are **kept and counted**, never dropped —
+discarding a row the tool cannot interpret would be destroying data on a guess.
+If *no* row in the file parses, the file is skipped and the expected formats are
+reported rather than rewriting it unchanged.
 
 On failure the original is left untouched and temporary files are cleaned up.
+`-WhatIf` shows what would happen without writing anything.
 
 ### Before you run either on real data
 
@@ -190,44 +191,82 @@ stays under its original name while the complete record remains recoverable.
 
 ## Running it
 
-Interactively, it asks for the mode and the retain count, then opens a file
-picker (multi-select):
+Interactively — a settings dialog, then a multi-select file picker, then one
+confirmation per file:
 
 ```powershell
-.\Decimate_v2.ps1
+.\Decimate_v3.ps1
 ```
 
-At the prompts: `1` = hourly (default), `6` = six-hourly, `24` = daily. The
-retain count keeps the first N valid data rows regardless of their timestamp —
-useful for SAA files whose initialisation rows matter.
+The confirmation is the point. It shows rows in, rows kept, rows dropped and the
+retained time range **before** anything is written, so a file whose timestamps
+don't line up is caught rather than emptied. Buttons are Proceed / Skip file /
+Exit all, the same as the combine tool.
 
-Non-interactively:
+Non-interactively — supplying `-Mode` suppresses all dialogs:
 
 ```powershell
-.\Decimate_v2.ps1 -ModeParam Hourly -RetainParam 5 `
-                  -FilesParam "C:\Data\Station1.csv","C:\Data\Station2.dat"
+.\Decimate_v3.ps1 -Mode Hourly -RetainFirst 5 `
+                  -Path 'C:\Data\Station1.csv','C:\Data\Station2.dat'
+
+.\Decimate_v3.ps1 -Mode Daily -Path 'C:\Data\*.dat' -WhatIf
 ```
 
 | Option | Effect |
 |---|---|
-| `-ModeParam` | `Hourly` \| `SixHourly` \| `Daily` |
-| `-RetainParam <int>` | Keep the first N valid data rows regardless of interval (`0` disables) |
-| `-FilesParam <paths>` | One or more files; skips the picker |
+| `-Mode` | `Hourly` \| `SixHourly` \| `Daily`. Supplying it means no dialogs |
+| `-RetainFirst <int>` | Also keep the first N valid rows regardless of interval (`0` disables). SAA files often need `5` |
+| `-Path <string[]>` | Files; wildcards allowed. Omit for a picker |
+| `-NoBackup` | Skip the backup copy — removes your only automatic undo |
+| `-Encoding` | `Auto` (default, matches the input's BOM), `UTF8`, `UTF8BOM`, `ASCII`, `Unicode` |
+| `-Force` | Allow emptying a file, and allow files inside `Backup\` |
+| `-WhatIf` / `-Confirm` | Standard PowerShell |
+
+The v2 names `-ModeParam`, `-RetainParam` and `-FilesParam` still work as
+aliases, so existing scheduled calls keep running.
+
+One summary object per file is emitted, so results can be captured:
+
+```powershell
+$r = .\Decimate_v3.ps1 -Mode Hourly -Path 'C:\Data\*.dat'
+$r | Where-Object RowsKept -eq 0
+```
 
 ## What it keeps
 
 | Mode | Rows kept |
 |---|---|
-| `Hourly` | `HH:00:00` |
-| `SixHourly` | `00:00:00`, `06:00:00`, `12:00:00`, `18:00:00` |
-| `Daily` | `00:00:00` |
+| `Hourly` | `HH:00` |
+| `SixHourly` | `00:00`, `06:00`, `12:00`, `18:00` |
+| `Daily` | `00:00` |
 
-Header rows are found by scanning down from the top until a first column parses
-as `yyyy-MM-dd HH:mm:ss`, and everything above that is preserved as-is. The
-original is copied to `Backup\<name>_fulldataset<ext>` before the thinned version
-takes its place under the original name.
+Seconds and milliseconds must be zero. Accepted timestamp formats in the first
+column:
 
-Full reference: [`Decimate_v2_README.txt`](Decimate_v2_README.txt).
+```
+yyyy-MM-dd HH:mm:ss.fff      yyyy-MM-dd HH:mm:ss
+yyyy-MM-dd HH:mm             yyyy-MM-ddTHH:mm:ss[.fff]
+```
+
+Header rows are the leading rows whose first column is not a timestamp — however
+many that is, including none. Once a timestamp has been seen the header is over,
+so a later unreadable row counts as bad data rather than a header.
+
+The original is copied to `Backup\<name>_fulldataset<ext>` before the thinned
+version takes its place under the original name.
+
+## Tests
+
+`test_decimate_v3.ps1` covers the cases the review turned on — off-interval data
+being refused, fractional-second timestamps, BOM preservation, `-WhatIf` leaving
+nothing behind, the v2 aliases, and more:
+
+```powershell
+.\test_decimate_v3.ps1
+```
+
+Full reference and the v2 → v3 changelog:
+[`Decimate_v3_README.txt`](Decimate_v3_README.txt).
 
 ## Licence and warranty
 
