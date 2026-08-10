@@ -6,6 +6,26 @@
     visually compares headers before merging, de-duplicates and sorts data, and
     moves merged secondaries into a Backup folder.
 
+    USE AT YOUR OWN RISK - NO WARRANTY
+    ==================================
+    This script MODIFIES AND MOVES DATA FILES. Licensed under GPL-3.0 and
+    provided "as is" with no warranty of any kind (see LICENSE sections 15-17).
+    You are responsible for verifying merged output before relying on it.
+
+    A merge cannot be undone automatically. Specifically:
+      * the primary file is REWRITTEN in place - its data section is replaced by
+        the merged, de-duplicated, re-sorted result, and original row order is
+        not retained
+      * secondary files are MOVED (not copied) into a Backup subfolder
+      * de-duplication compares the WHOLE row, case-insensitively, so rows that
+        differ only in letter case (NAN vs NaN) collapse to one
+      * sorting is a TEXT sort on the first column - correct for
+        YYYY-MM-DD HH:MM:SS, wrong for formats like M/D/YYYY
+      * -NoBackup removes the only automatic undo
+
+    Test on copies first, and read the comparison dialogs rather than clicking
+    through them. Declining one file is cheap; un-merging one is not.
+
     THREE WAYS TO INVOKE
     ====================
 

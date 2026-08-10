@@ -9,6 +9,47 @@ CardConvert downloads.
 Windows PowerShell 5.1 or later (PowerShell 7 works). Uses Windows Forms dialogs,
 so it is Windows-only.
 
+## ⚠ Use at your own risk
+
+**This tool modifies and moves your data files. Run it on copies until you trust
+it, and keep independent backups of anything you cannot regenerate.**
+
+It is provided "as is", with **no warranty of any kind** — see sections 15 and 16
+of [LICENSE](LICENSE) (GPL-3.0) for the formal terms. You are responsible for
+verifying the merged output before relying on it for analysis, reporting, or any
+decision. The authors accept no liability for lost, altered, or corrupted data.
+
+Specifically, a merge is **destructive**, and these are the behaviours to
+understand before pointing it at anything you care about:
+
+- **The primary file is rewritten in place.** Header and special rows are
+  preserved, but the data section is replaced with the merged, de-duplicated,
+  re-sorted result. Original row order is not retained.
+- **Secondary files are moved, not copied.** After a successful merge they are
+  relocated into a `Backup` subfolder beside the primary.
+- **De-duplication compares the entire row, case-insensitively.** Two rows with
+  the same timestamp but different values are both kept, as they should be — but
+  two rows differing *only* in letter case (for example `NAN` vs `NaN`) are
+  treated as the same row and one is silently dropped.
+- **Sorting is a text sort on the first column.** That is chronologically correct
+  for `YYYY-MM-DD HH:MM:SS` timestamps. If your first column uses another format
+  — `M/D/YYYY`, for instance — the output will be ordered wrongly.
+- **A pre-merge backup of the primary is created unless you pass `-NoBackup`.**
+  Passing it removes your only automatic undo.
+- **The file is rewritten with the encoding given by `-Encoding`.** If that does
+  not match the original, characters can change.
+
+The header-comparison dialogs exist precisely because these operations cannot be
+undone automatically. Read them rather than clicking through — declining a single
+file is cheap, and un-merging one is not.
+
+### Before you run it on real data
+
+1. Copy a representative folder somewhere scratch and run it there first.
+2. Confirm the row count and time range of the merged file are what you expect.
+3. Check the `Backup` folder contains what you think it should.
+4. Only then run it against live data, and leave `-NoBackup` alone.
+
 ## Why
 
 A logger table accumulates duplicates from several directions at once:
@@ -102,6 +143,12 @@ pre-merge backup is removed.
 A screen-recorded walkthrough ships with the internal copy of this package but is
 not in the repository — it is far past GitHub's file size limit.
 
-## Licence
+## Licence and warranty
 
-GPL-3.0. See [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE).
+
+As stated there in sections 15–17, the program is licensed free of charge and
+comes with **no warranty**: no implied warranty of merchantability or fitness for
+a particular purpose, and no liability for damages arising from its use,
+including loss of data. See [Use at your own risk](#-use-at-your-own-risk) above
+for what that means in practice for this particular tool.
