@@ -1,0 +1,12 @@
+Windows Registry Editor Version 5.00
+
+; Uninstaller - removes the "Combine Time Series Files_v9" right-click entries
+; created by Add_CombineDAT_Context.reg. Removing each parent key also removes
+; its \command subkey. Double-click to run (requires admin / UAC because it
+; writes to HKEY_CLASSES_ROOT).
+
+[-HKEY_CLASSES_ROOT\*\shell\CombineDATFiles]
+
+[-HKEY_CLASSES_ROOT\Directory\shell\CombineDATFiles]
+
+[-HKEY_CLASSES_ROOT\Directory\Background\shell\CombineDATFiles]

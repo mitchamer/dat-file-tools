@@ -1,0 +1,15 @@
+# The distributed package folder also carries a large screen-recording
+# walkthrough ("BGC How To.mp4", ~1.2 GB). It exceeds GitHub's 100 MB per-file
+# limit and does not belong in version control.
+*.mp4
+*.mkv
+*.mov
+*.avi
+
+# Packaged copies of this folder
+*.zip
+
+# Editor / OS noise
+Thumbs.db
+desktop.ini
+.vscode/
