@@ -78,9 +78,21 @@
        -SpecialRowCount <int>   Number of special/metadata rows after the header
                                 (default 3 -> rows 2-4 are preserved as-is).
        -NoBackup                Do not create a pre-merge backup of the primary.
-       -Encoding <UTF8|ASCII|Unicode>   Output encoding (default UTF8). ASCII also
-                                enables non-ASCII character checks.
-         PS> .\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding UTF8
+       -Encoding <Auto|UTF8|UTF8BOM|ASCII|Unicode>
+                                Output encoding. Default Auto, which matches the
+                                primary's existing byte-order mark so merging does
+                                not change the file's encoding. ASCII also enables
+                                non-ASCII character checks.
+         PS> .\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding Auto
+
+    A NOTE ON THE ENCODING DEFAULT
+    ==============================
+    Before this change the default was UTF8 via Set-Content, which under
+    PowerShell 5.1 writes a byte-order mark. A BOM ahead of the TOA5 row leaves
+    LoggerNet unable to recognise the data file it is appending to: it renames
+    the file to .dat.backup and starts a fresh one, so a merge appeared to
+    succeed while LoggerNet quietly stopped using the result. Auto avoids that
+    by writing the file back the way it was found.
 #>
 [CmdletBinding()]
 param(
@@ -93,15 +105,71 @@ param(
     [Parameter()]
     [switch]$NoBackup,
 
+    # Output encoding for the rewritten primary.
+    #
+    # 'Auto' (default) matches the primary's existing byte-order mark, so merging
+    # does not change the file's encoding. This matters more than it looks:
+    # Set-Content -Encoding UTF8 writes a BOM under PowerShell 5.1 (though not
+    # under 7), and a BOM ahead of the TOA5 row leaves LoggerNet unable to
+    # recognise the file it is appending to. It responds by renaming the file to
+    # .dat.backup and starting a fresh one, silently orphaning everything that
+    # was just merged.
+    #
+    # 'UTF8' now means UTF8 WITHOUT a BOM on every PowerShell version; ask for
+    # 'UTF8BOM' if a BOM is actually wanted.
     [Parameter()]
-    [ValidateSet('UTF8', 'ASCII', 'Unicode')]
-    [string]$Encoding = 'UTF8'
+    [ValidateSet('Auto', 'UTF8', 'UTF8BOM', 'ASCII', 'Unicode')]
+    [string]$Encoding = 'Auto'
 )
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
 #region Helper Functions
+
+# Sniff a file's byte-order mark, so 'Auto' can write it back the way it came in.
+# LoggerNet data files carry no BOM; adding one makes LoggerNet unable to
+# recognise the file and it responds by abandoning it (renaming to .dat.backup
+# and starting fresh), which silently orphans a merge.
+function Get-FileBomEncoding {
+    param([string]$FilePath)
+
+    $bytes = New-Object byte[] 4
+    $read = 0
+    try {
+        $stream = [System.IO.File]::OpenRead($FilePath)
+        try { $read = $stream.Read($bytes, 0, 4) } finally { $stream.Dispose() }
+    } catch {
+        return (New-Object System.Text.UTF8Encoding($false))
+    }
+
+    if ($read -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        return (New-Object System.Text.UTF8Encoding($true))      # UTF8 with BOM
+    }
+    if ($read -ge 2 -and $bytes[0] -eq 0xFF -and $bytes[1] -eq 0xFE) {
+        return (New-Object System.Text.UnicodeEncoding($false, $true))
+    }
+    if ($read -ge 2 -and $bytes[0] -eq 0xFE -and $bytes[1] -eq 0xFF) {
+        return (New-Object System.Text.UnicodeEncoding($true, $true))
+    }
+    return (New-Object System.Text.UTF8Encoding($false))         # UTF8, no BOM
+}
+
+# Turn the -Encoding name into a concrete .NET encoding. Using explicit encoding
+# objects rather than Set-Content's -Encoding keeps behaviour identical across
+# PowerShell 5.1 and 7, where 'UTF8' means with-BOM and without-BOM respectively.
+function Resolve-OutputEncoding {
+    param([string]$Name, [string]$FilePath)
+
+    switch ($Name) {
+        'Auto'    { return (Get-FileBomEncoding -FilePath $FilePath) }
+        'UTF8'    { return (New-Object System.Text.UTF8Encoding($false)) }
+        'UTF8BOM' { return (New-Object System.Text.UTF8Encoding($true)) }
+        'ASCII'   { return ([System.Text.Encoding]::ASCII) }
+        'Unicode' { return (New-Object System.Text.UnicodeEncoding($false, $true)) }
+    }
+    return (New-Object System.Text.UTF8Encoding($false))
+}
 
 function Select-FileDialog {
     param(
@@ -764,7 +832,7 @@ function Invoke-CombineForPrimary {
         [Parameter(Mandatory)][string]$PrimaryPath,
         [Parameter(Mandatory)][string[]]$SecondaryPaths,
         [int]$SpecialRowCount = 3,
-        [string]$Encoding = 'UTF8',
+        [string]$Encoding = 'Auto',
         [switch]$NoBackup,
         [switch]$AutoProceedOnHeaderMatch
     )
@@ -917,7 +985,12 @@ function Invoke-CombineForPrimary {
             }
 
             $outputLines = @($originalHeader) + $originalSpecials + $sortedData
-            $outputLines | Set-Content -Path $PrimaryPath -Encoding $Encoding -ErrorAction Stop
+            # Written with an explicit .NET encoding rather than
+            # Set-Content -Encoding, whose 'UTF8' means with-BOM on PowerShell
+            # 5.1 and without-BOM on 7. A stray BOM stops LoggerNet recognising
+            # the file and makes it abandon it -- see Resolve-OutputEncoding.
+            $enc = Resolve-OutputEncoding -Name $Encoding -FilePath $PrimaryPath
+            [System.IO.File]::WriteAllLines($PrimaryPath, [string[]]$outputLines, $enc)
 
             $backupPath = Join-Path $backupFolder $secondaryName
             if (Test-Path $backupPath) {

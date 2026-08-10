@@ -169,11 +169,50 @@ The banner is green when values are identical, red when they differ.
 |---|---|
 | `-SpecialRowCount <int>` | Special rows after row 1 (default 3) |
 | `-NoBackup` | Skip the pre-merge backup of the primary |
-| `-Encoding <UTF8\|ASCII\|Unicode>` | Output encoding (default UTF8). `ASCII` also enables non-ASCII character checks |
+| `-Encoding <Auto\|UTF8\|UTF8BOM\|ASCII\|Unicode>` | Output encoding. **Default `Auto`** — matches the primary's existing byte-order mark. `ASCII` also enables non-ASCII character checks |
 
 ```powershell
-.\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding UTF8
+.\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding Auto
 ```
+
+### Fixed: merging used to make LoggerNet abandon the file
+
+Earlier versions defaulted to `-Encoding UTF8` via `Set-Content`, which **under
+PowerShell 5.1 writes a byte-order mark** (PowerShell 7 does not). A BOM sits
+ahead of the TOA5 row, so LoggerNet could no longer recognise the data file it was
+appending to — it renamed the file to `.dat.backup` and started a fresh one.
+
+The result was quietly bad: the merge itself succeeded, but LoggerNet stopped
+using the merged file, collection restarted from zero, and the merged history was
+left orphaned in a `.backup` nobody was looking at.
+
+`Auto` fixes this by writing the file back the way it was found. LoggerNet data
+files have no BOM, so none is added. `test_encoding.ps1` covers it:
+
+```powershell
+.\test_encoding.ps1
+```
+
+**If this already happened to you**, the symptom is a large `.dat.backup` beside a
+small, recently-started `.dat`, and the `.backup` begins with the bytes
+`EF BB BF`. To check and recover:
+
+```powershell
+# does the backup carry a BOM?
+$f = 'X_DATA.dat.backup'
+$b = New-Object byte[] 3
+$s = [IO.File]::OpenRead($f); $null = $s.Read($b,0,3); $s.Dispose()
+'{0:X2} {1:X2} {2:X2}' -f $b[0],$b[1],$b[2]     # EF BB BF means yes
+
+# strip it, then merge the backup into the live .dat with this fixed version
+$lines = [string[]](Get-Content -LiteralPath $f)
+[IO.File]::WriteAllLines($f, $lines, (New-Object Text.UTF8Encoding($false)))
+```
+
+Then run the combine tool with the **live `.dat` as the primary** and the
+`.backup` as the secondary, so the result stays in the file LoggerNet is
+collecting into. Do it between collections, or with LoggerNet's collection for
+that station paused.
 
 With `-Encoding ASCII`, the primary and each secondary are scanned for non-ASCII
 characters; if any are found the line numbers are reported and you choose whether
