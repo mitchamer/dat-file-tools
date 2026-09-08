@@ -1,8 +1,9 @@
 # Combine DAT files (v9)
 
 Merges a table's scattered copies — the collected file, its `.bak`/`.backup`
-duplicates, and timestamped card downloads — into one file, showing a side-by-side
-header comparison that you must approve before anything is written.
+duplicates, and re-collected or card-converted downloads — into one file, showing
+a side-by-side header comparison that you must approve before anything is
+written.
 
 Built for TOA5-style output, where the same logger table ends up in several files
 and merging by hand risks stitching together data from different programs, column
@@ -46,8 +47,9 @@ contains what you expect. Then run it live, and leave `-NoBackup` alone.
 ### 1. Folder mode — auto-group duplicates
 
 Run with no arguments and click **Yes** at the mode prompt, then pick a folder. It
-groups each data file with its backup-style duplicates and timestamped downloads,
-then runs the two-step comparison per group.
+groups each data file with its backup-style duplicates, and with any other data
+file whose TOA5 row 1 shows the same logger serial and table name, then runs the
+two-step comparison per group.
 
 ```powershell
 .\'Combine DAT files_v9.ps1'
@@ -122,30 +124,54 @@ preferred.
 **Backup-style secondaries:** `.bak` `.backup` `.backupN` `.1` (any number)
 `.old` `.orig` `.copy` — e.g. `Foo.dat.backup`, `Foo.dat.1`
 
-**LoggerNet / CardConvert downloads:**
-`<serial>_<Table>_<YYYY-MM-DDTHH-MM[-SS]>.dat` — e.g.
-`13910_SAA_DIAGNOSTICS_2026-07-23T15-44.dat`, merging into the collected file
-holding the same table.
-
-The table name comes from **row 1**, not the filename:
+**Re-collected copies of the same table:** matched on **logger serial** and
+**table name** out of TOA5 row 1, and nothing else — the filename plays no part
+in the match:
 
 ```
 "TOA5","TM_MCL-02","CR6","13910","CR6.Std.14.01","prog.cr6","31248","Status"
- 1      2 station    3     4       5              6          7       8 TABLE
+ 1      2 station    3     4 SERIAL 5             6          7       8 TABLE
 ```
 
-Row 1 is what the logger itself wrote, so renamed or re-collected files still
-match. Matching is strict so nothing lands in the wrong file:
+Row 1 is what the logger itself wrote, so every naming convention works —
+LoggerNet collections, CardConvert output, renamed files, `(1)` copies:
 
-- the serial must be digits only, and the stamp exactly `YYYY-MM-DDTHH-MM`
-  (optionally `-SS`) with nothing after it
-- row-1 table names must be equal (case-insensitive)
-- extensions must match
-- a file whose row 1 names a *different* table is never matched by its filename
-- files with no TOA5 row 1 fall back to matching the `_<Table>` filename ending
-- if two or more files could still be the target, the tie breaks only on hard
-  evidence — row-1 serial, then filename table suffix. If that still leaves more
-  than one, the download is **reported and skipped**, never merged into a guess
+```
+18421_SAA_SAA1_DATA_2026-09-08.dat   ->  18421_SAA1_DATA.dat
+13910_Status_2026-07-23T15-44.dat    ->  TM_MCL-02_Status.dat
+SAA1_DATA (1).dat                    ->  18421_SAA1_DATA.dat
+```
+
+Two files are in the same group when row 1 gives them the same serial **and**
+the same table (case-insensitive), and their extensions match. Files with no
+readable TOA5 row 1 have neither field, so they take no part in this — only
+backup-suffix matching covers them.
+
+**Which file is the primary** is the one thing serial and table cannot settle:
+they are identical across the whole group by definition. It has to be the file
+the logger software keeps appending to, or the merged rows end up in a file
+nothing collects into. So exactly one name-shaped rule decides the *role* —
+never the match:
+
+- a name ending in a date stamp — `_YYYY-MM-DD`, optionally with a time
+  (`_2026-09-08T15-44`, `_2026-09-08T15-44-30`, `_2026-09-08_15-44`) — is a
+  **download**; anything else is the **collected file**
+- one collected file in the group → it is the primary, and the dated downloads
+  merge into it oldest stamp first
+- two or more files that could each be the collected file → **reported and
+  skipped**, never merged into a guess
+- dated downloads only, no collected file → **reported and skipped**; which one
+  should become the archive is your call, so merge those manually
+
+Skipped groups are named in the console window, with the files that made them
+ambiguous.
+
+`test_grouping.ps1` covers the grouping rules — the folder layouts that match,
+and the ambiguous ones that are refused:
+
+```powershell
+.\test_grouping.ps1
+```
 
 ## The comparison window
 

@@ -35,15 +35,16 @@
        row 2 (header) then row 1 (file info):
          a) backup-style duplicates
             (.bak/.backup/.backup1/.1/.old/.orig/.copy), and
-         b) LoggerNet/CardConvert timestamped downloads
-            <serial>_<Table>_<YYYY-MM-DDTHH-MM[-SS]>.dat merged into the
-            collected file holding the same table:
-              13910_SAA_DIAGNOSTICS_2026-07-23T15-44.dat
-                -> TM_MCL-02_SAA_DIAGNOSTICS.dat
-            The table is read from TOA5 row 1 (last field), not from the file
-            name, so renamed collected files still match. Extensions must be the
-            same, and if more than one file could be the target the download is
-            reported and skipped instead of being merged into a guess.
+         b) data files that TOA5 row 1 says came from the SAME LOGGER SERIAL and
+            the SAME TABLE - matched on those two fields alone, so the file name
+            plays no part in the match:
+              18421_SAA_SAA1_DATA_2026-09-08.dat -> 18421_SAA1_DATA.dat
+            Row 1 is what the logger itself wrote, so renamed, re-collected and
+            card-converted files all match. Extensions must be the same. Within
+            a group the primary is the one file whose name does NOT end in a date
+            stamp (the file the logger software keeps appending to); if that
+            leaves two candidates, or none, the group is reported and skipped
+            rather than merged into a guess.
        Only files sitting directly in the chosen folder are scanned - subfolders
        are NOT entered.
          PS> .\'Combine DAT files_v9.ps1'
@@ -679,18 +680,19 @@ function Get-Toa5EnvironmentFields {
 function Get-DuplicateGroups {
     <#
         Scans the TOP LEVEL of a folder only (subfolders are never entered) and
-        builds merge groups from two naming conventions:
+        builds merge groups two ways:
 
-        1) BACKUP SUFFIXES - files sharing the same canonical data-file name plus
-           an extra suffix such as .bak, .backup, .backup1, .1, .old, .orig, .copy.
+        1) BACKUP SUFFIXES (by name) - files sharing the same canonical data-file
+           name plus an extra suffix such as .bak, .backup, .backup1, .1, .old,
+           .orig, .copy.
 
-        2) LOGGERNET TIMESTAMPED DOWNLOADS - files named
-              <serial>_<Table>_<YYYY-MM-DDTHH-MM[-SS]>.<ext>
-           (e.g. 13910_SAA_DIAGNOSTICS_2026-07-23T15-44.dat) are merged into the
-           collected file for the same table in the same folder
-              <Station>_<Table>.<ext>
-           (e.g. TM_MCL-02_SAA_DIAGNOSTICS.dat).
-           Matching is deliberately strict - see Add-LoggerNetDownloadGroups.
+        2) SAME LOGGER, SAME TABLE (by TOA5 row 1) - data files whose row 1 gives
+           the same SERIAL and the same TABLE are one group, whatever they are
+           named:
+              18421_SAA_SAA1_DATA_2026-09-08.dat  ->  18421_SAA1_DATA.dat
+           The dated downloads merge into the collected file. See
+           Add-Toa5SerialTableGroups for how the primary is chosen and when a
+           group is reported and skipped instead.
 
         Each returned group has:
           Key         - canonical data file name (e.g. Foo_SAA.dat)
@@ -737,44 +739,49 @@ function Get-DuplicateGroups {
         }
     }
 
-    # Second pass: LoggerNet / CardConvert timestamped downloads.
-    Add-LoggerNetDownloadGroups -AllFiles $allFiles -Groups $groups -DataExt $dataExt
+    # Second pass: same serial + same table per TOA5 row 1.
+    Add-Toa5SerialTableGroups -AllFiles $allFiles -Groups $groups -DataExt $dataExt
 
     # Only return groups that actually have a primary AND at least one duplicate.
     return $groups.Values | Where-Object { $_.Primary -and $_.Secondaries.Count -gt 0 }
 }
 
-function Add-LoggerNetDownloadGroups {
+function Add-Toa5SerialTableGroups {
     <#
-        Adds LoggerNet / CardConvert timestamped downloads to the merge groups.
+        Adds re-collected / re-downloaded copies of a logger table to the merge
+        groups, matched ONLY on the two pieces of hard evidence the datalogger
+        itself wrote into TOA5 row 1:
 
-        A SECONDARY must look exactly like:
-            <serial>_<Table>_<YYYY-MM-DDTHH-MM[-SS]>.<dat|csv|txt>
-            13910_SAA_DIAGNOSTICS_2026-07-23T15-44.dat
-        i.e. a digits-only leading serial, underscore-separated table name, then an
-        ISO-style date, a literal 'T', and a hyphen-separated time - and NOTHING
-        after the stamp except the data extension.
-
-        Its PRIMARY is the collected file for the SAME TABLE in the same folder,
-        e.g. TM_MCL-02_SAA_DIAGNOSTICS.dat.
-
-        The table is taken from TOA5 row 1 (field 8), not from the file name:
             "TOA5","TM_MCL-02","CR6","13910","CR6.Std.14.01","prog.cr6","31248","Status"
-             0      1 station    2     3 serial 4              5          6       7 table
-        The name in row 1 is what the datalogger actually wrote, so it survives
-        renamed / re-collected files. The file name is only used to recognise a
-        download in the first place, and as a fallback for files that have no
-        TOA5 row 1 at all.
+             0      1 station    2     3 SERIAL 4             5          6       7 TABLE
 
-        Strictness rules (mis-matching is worse than not matching):
-          * the download name must match the pattern above exactly - digits-only
-            serial, an ISO date + 'T' + hyphenated time, nothing after the stamp;
-          * row-1 table names must be equal (case-insensitive);
-          * extensions must be the same;
-          * the primary must not itself be a timestamped download or a backup file;
-          * exactly ONE primary candidate must remain, otherwise the download is
-            skipped and reported - never guessed at. Ties are broken only by hard
-            evidence: the row-1 serial number, then the file name's table suffix.
+        Two files belong to the same group when row 1 gives them the SAME SERIAL
+        and the SAME TABLE (case-insensitive) - and they share an extension, so a
+        merge never changes what kind of file the folder holds. The file NAME is
+        not consulted for matching at all, so every naming convention works:
+
+            18421_SAA_SAA1_DATA_2026-09-08.dat  ->  18421_SAA1_DATA.dat
+            13910_Status_2026-07-23T15-44.dat   ->  TM_MCL-02_Status.dat
+            SAA1_DATA (1).dat                   ->  18421_SAA1_DATA.dat
+
+        WHICH FILE IS THE PRIMARY
+        The primary must be the file the logger software keeps appending to -
+        merging the other way round leaves the newly merged rows in a file
+        nothing collects into. Serial and table cannot tell those apart (they are
+        identical by definition here), so exactly one name-shaped rule decides
+        the ROLE, never the match: a file whose name ends in a download date
+        stamp (_YYYY-MM-DD, optionally with a time) is a download, and anything
+        else is a collected file.
+
+          * exactly one collected file in the group -> it is the primary and
+            every dated download merges into it, oldest stamp first;
+          * two or more collected files (two archives of one table in one
+            folder) -> reported and skipped, never merged into a guess;
+          * dated downloads only, no collected file -> reported and skipped;
+            which download should become the archive is the user's call.
+
+        Files with no readable TOA5 row 1 carry neither serial nor table, so they
+        take no part in this pass (backup-suffix matching still covers them).
 
         $Groups is mutated in place (hashtable keyed by lowercase primary name).
     #>
@@ -784,106 +791,77 @@ function Add-LoggerNetDownloadGroups {
         [Parameter(Mandatory)][string]$DataExt
     )
 
-    $tableToken = '[A-Za-z0-9][A-Za-z0-9-]*'
-    $stamp = '\d{4}-\d{2}-\d{2}T\d{2}-\d{2}(?:-\d{2})?'
-    $loggerPattern = "^(?<serial>\d{3,10})_(?<table>$tableToken(?:_$tableToken)*)_(?<stamp>$stamp)\.(?<ext>$DataExt)$"
+    # A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
+    # and the underscore / dotted-time variants LoggerNet and CardConvert produce.
+    $stampSuffix = '_(?<stamp>\d{4}-\d{2}-\d{2}(?:[T_]\d{2}[-.]\d{2}(?:[-.]\d{2})?)?)$'
 
-    # Oldest download first so merges happen in chronological order.
-    $downloads = @(
-        $AllFiles |
-            Where-Object { $_.Name -match $loggerPattern } |
-            Sort-Object -Property @{ Expression = { if ($_.Name -match $loggerPattern) { $Matches['stamp'] } else { '' } } }, Name
-    )
-    if ($downloads.Count -eq 0) { return }
-
-    # Row 1 is read once per file - these folders often live on a slow share.
-    $toa5Cache = @{}
-    $getFields = {
-        param([string]$Path)
-        if (-not $toa5Cache.ContainsKey($Path)) {
-            $toa5Cache[$Path] = Get-Toa5EnvironmentFields -FilePath $Path
-        }
-        return $toa5Cache[$Path]
-    }
-
-    # Candidate primaries: data files that are neither timestamped downloads nor
-    # backup files (a trailing .bak/.1/... means the data extension is not last,
-    # so those simply fail this pattern).
-    $candidates = [System.Collections.Generic.List[object]]::new()
+    # Every top-level data file that actually carries a TOA5 row 1. Row 1 is read
+    # once per file - these folders often live on a slow network share.
+    $members = [System.Collections.Generic.List[object]]::new()
     foreach ($f in $AllFiles) {
-        if ($f.Name -match $loggerPattern) { continue }
+        # The data extension must be LAST, so backup copies (Foo.dat.bak, Foo.dat.1)
+        # fail here and stay with the backup-suffix pass that owns them.
         if ($f.Name -notmatch "^(?<base>.+)\.(?<ext>$DataExt)$") { continue }
         # Read $Matches before anything else can overwrite it.
         $base = $Matches['base']
-        $fileExt = $Matches['ext']
-        $fields = & $getFields $f.FullName
-        $candidates.Add([pscustomobject]@{
+        $ext = $Matches['ext'].ToLowerInvariant()
+
+        $fields = Get-Toa5EnvironmentFields -FilePath $f.FullName
+        if (-not $fields) { continue }
+        $serial = $fields[3].Trim()
+        $table = $fields[7].Trim()
+        if ([string]::IsNullOrWhiteSpace($serial) -or [string]::IsNullOrWhiteSpace($table)) { continue }
+
+        $stamp = if ($base -match $stampSuffix) { $Matches['stamp'] } else { $null }
+
+        $members.Add([pscustomobject]@{
             File   = $f
-            Base   = $base
-            Ext    = $fileExt
-            Table  = if ($fields) { $fields[7].Trim() } else { $null }
-            Serial = if ($fields) { $fields[3].Trim() } else { $null }
+            Serial = $serial
+            Table  = $table
+            Ext    = $ext
+            Stamp  = $stamp
         })
     }
+    if ($members.Count -lt 2) { return }
 
-    foreach ($d in $downloads) {
-        [void]($d.Name -match $loggerPattern)
-        $nameTable = $Matches['table']
-        $ext = $Matches['ext']
-
-        $dFields = & $getFields $d.FullName
-        # Row 1 is the authority; the file name only fills in for non-TOA5 files.
-        $table = if ($dFields) { $dFields[7].Trim() } else { $nameTable }
-        $dSerial = if ($dFields) { $dFields[3].Trim() } else { $null }
-        $tableSource = if ($dFields) { 'row 1' } else { 'file name' }
-
-        $pool = @($candidates | Where-Object { $_.Ext -eq $ext })
-
-        # 1) Table name from row 1 - the normal path.
-        $targets = @($pool | Where-Object { $_.Table -and $_.Table -eq $table })
-
-        # 2) Only files with no TOA5 row 1 fall back to the name's table suffix.
-        #    A file that HAS row 1 and disagrees is never matched by name.
-        if ($targets.Count -eq 0) {
-            $tail = "_$table"
-            $targets = @(
-                $pool | Where-Object {
-                    -not $_.Table -and
-                    $_.Base.Length -gt $tail.Length -and
-                    $_.Base.EndsWith($tail, [System.StringComparison]::OrdinalIgnoreCase)
-                }
-            )
+    # Group on serial + table + extension, and nothing else.
+    $sets = @{}
+    foreach ($m in $members) {
+        $key = '{0}|{1}|{2}' -f $m.Serial.ToLowerInvariant(), $m.Table.ToLowerInvariant(), $m.Ext
+        if (-not $sets.ContainsKey($key)) {
+            $sets[$key] = [System.Collections.Generic.List[object]]::new()
         }
+        $sets[$key].Add($m)
+    }
 
-        # 3) Two collected files for the same table (two stations in one folder):
-        #    break the tie on the row-1 serial number, then on the name suffix.
-        if ($targets.Count -gt 1 -and $dSerial) {
-            $narrowed = @($targets | Where-Object { $_.Serial -and $_.Serial -eq $dSerial })
-            if ($narrowed.Count -gt 0) { $targets = $narrowed }
-        }
-        if ($targets.Count -gt 1) {
-            $tail = "_$nameTable"
-            $narrowed = @(
-                $targets | Where-Object {
-                    $_.Base.Length -gt $tail.Length -and
-                    $_.Base.EndsWith($tail, [System.StringComparison]::OrdinalIgnoreCase)
-                }
-            )
-            if ($narrowed.Count -gt 0) { $targets = $narrowed }
-        }
+    foreach ($key in @($sets.Keys | Sort-Object)) {
+        $set = @($sets[$key])
+        if ($set.Count -lt 2) { continue }
 
-        if ($targets.Count -eq 0) {
-            Write-Host ("  Skipped '$($d.Name)': no .$ext file in this folder holds table " +
-                "'$table' (from $tableSource).") -ForegroundColor DarkYellow
+        $label = "serial $($set[0].Serial), table '$($set[0].Table)' (.$($set[0].Ext))"
+        $collected = @($set | Where-Object { -not $_.Stamp })
+        # Oldest download first so merges happen in chronological order.
+        $downloads = @(
+            $set |
+                Where-Object { $_.Stamp } |
+                Sort-Object -Property @{ Expression = { $_.Stamp } }, @{ Expression = { $_.File.Name } }
+        )
+
+        if ($collected.Count -eq 0) {
+            $names = ($downloads | ForEach-Object { $_.File.Name }) -join ', '
+            Write-Warning ("Skipped $label`: every file is a dated download and none is the " +
+                "collected file ($names). Merge them manually.")
             continue
         }
-        if ($targets.Count -gt 1) {
-            $names = ($targets | ForEach-Object { $_.File.Name }) -join ', '
-            Write-Warning "Skipped '$($d.Name)': table '$table' is ambiguous ($names). Merge it manually."
+        if ($collected.Count -gt 1) {
+            $names = ($collected | ForEach-Object { $_.File.Name }) -join ', '
+            Write-Warning ("Skipped $label`: more than one file could be the collected file " +
+                "($names). Merge them manually.")
             continue
         }
+        if ($downloads.Count -eq 0) { continue }
 
-        $primaryFile = $targets[0].File
+        $primaryFile = $collected[0].File
         $keyLower = $primaryFile.Name.ToLowerInvariant()
         if (-not $Groups.ContainsKey($keyLower)) {
             $Groups[$keyLower] = [pscustomobject]@{
@@ -893,11 +871,25 @@ function Add-LoggerNetDownloadGroups {
             }
         }
         if (-not $Groups[$keyLower].Primary) { $Groups[$keyLower].Primary = $primaryFile.FullName }
-        if (-not $Groups[$keyLower].Secondaries.Contains($d.FullName)) {
-            $Groups[$keyLower].Secondaries.Add($d.FullName)
+
+        foreach ($d in $downloads) {
+            # A download that is itself a primary elsewhere (it has its own .bak)
+            # would be merged into and then moved to Backup in the same scan.
+            $dKey = $d.File.Name.ToLowerInvariant()
+            if ($Groups.ContainsKey($dKey) -and $Groups[$dKey].Secondaries.Count -gt 0 -and
+                $Groups[$dKey].Primary -eq $d.File.FullName) {
+                Write-Warning ("Skipped '$($d.File.Name)' as a secondary of " +
+                    "'$($primaryFile.Name)': it has backup copies of its own and is merged " +
+                    "as a primary in this scan. Merge it into '$($primaryFile.Name)' afterwards.")
+                continue
+            }
+            if (-not $Groups[$keyLower].Secondaries.Contains($d.File.FullName)) {
+                $Groups[$keyLower].Secondaries.Add($d.File.FullName)
+            }
         }
     }
 }
+
 
 function Invoke-CombineForPrimary {
     <#
@@ -1199,7 +1191,8 @@ try {
         $choice = [System.Windows.Forms.MessageBox]::Show(
             "How do you want to select files to combine?`n`n" +
             "Yes  =  Scan a FOLDER and auto-group duplicates" + [char]0x0A +
-            "          (matches .bak / .backup / .backup1 / .1 ...)`n`n" +
+            "          (.bak / .backup / .1 ..., and files whose TOA5" + [char]0x0A +
+            "          row 1 shows the same logger serial and table)`n`n" +
             "No   =  Manually pick a primary file and secondary files",
             "Combine DAT Files - Choose Mode",
             [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
@@ -1237,9 +1230,13 @@ try {
                 "No duplicate file groups were found in:`n$folder`n`n" +
                 "A group needs a data file (.dat/.csv/.txt) plus at least one of:`n" +
                 "  - a backup-style duplicate (.bak/.backup/.backup1/.1 ...), or`n" +
-                "  - a LoggerNet download named`n" +
-                "    <serial>_<Table>_<YYYY-MM-DDTHH-MM>.dat whose TOA5 table`n" +
-                "    name matches a collected file in the same folder."
+                "  - another data file of the same extension whose TOA5 row 1`n" +
+                "    gives the same logger serial and the same table name, with`n" +
+                "    a date stamp on the end of its name (_YYYY-MM-DD) marking`n" +
+                "    it as the download rather than the collected file.`n`n" +
+                "The console window lists any group that was found but skipped as`n" +
+                "ambiguous - two files that could each be the collected file, or`n" +
+                "dated downloads with no collected file to merge into."
             )
             Write-Host "No duplicate groups found." -ForegroundColor Yellow
             return
