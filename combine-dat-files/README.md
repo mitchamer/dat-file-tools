@@ -167,10 +167,12 @@ Skipped groups are named in the console window, with the files that made them
 ambiguous.
 
 `test_grouping.ps1` covers the grouping rules — the folder layouts that match,
-and the ambiguous ones that are refused:
+and the ambiguous ones that are refused. `test_validation.ps1` covers `-DryRun`,
+the three checks above, and the merge log:
 
 ```powershell
 .\test_grouping.ps1
+.\test_validation.ps1
 ```
 
 ## The comparison window
@@ -202,11 +204,83 @@ The banner is green when values are identical, red when they differ.
 |---|---|
 | `-SpecialRowCount <int>` | Special rows after row 1 (default 3) |
 | `-NoBackup` | Skip the pre-merge backup of the primary |
+| `-DryRun` | Report only — no dialogs, nothing written, moved or backed up |
 | `-Encoding <Auto\|UTF8\|UTF8BOM\|ASCII\|Unicode>` | Output encoding. **Default `Auto`** — matches the primary's existing byte-order mark. `ASCII` also enables non-ASCII character checks |
 
 ```powershell
 .\'Combine DAT files.ps1' -SpecialRowCount 3 -Encoding Auto
 ```
+
+### `-DryRun` — see what would happen first
+
+A dry run answers "what would this do to my folder" without doing any of it: no
+pre-merge backup, no rewrite of the primary, no secondary moved to `Backup`, no
+merge log, and **no dialogs** — the two comparisons the dialogs would put to you
+are made in code and reported instead.
+
+```powershell
+.\'Combine DAT files.ps1' 'C:\Data\SiteFolder' -DryRun
+```
+
+Per secondary you get one of:
+
+```
+  WOULD MERGE: 18421_SAA_SAA1_DATA_2026-09-08.dat
+    row 2 matches, row 1 matches
+    would add 4184 new unique row(s); primary would hold 30368
+    would move to: ...\Backup\18421_SAA_SAA1_DATA_2026-09-08.dat
+
+  WOULD ASK: header row (row 2) differs - a real run opens the comparison dialog here.
+  Not counted below, because the answer would be yours.
+```
+
+The row counts are what a real run would produce, so the "rows added" total is
+the number to sanity-check before running it for real. This is the pass to run
+on a folder you have not merged before.
+
+## What is checked before it writes
+
+Three things are reported rather than silently baked into the primary. All three
+are warnings, not refusals — the merge still happens, and the dialogs remain your
+stopping point:
+
+| Check | Why it matters |
+|---|---|
+| **Timestamp format** | Sorting is a text sort, correct only while the first column is `YYYY-MM-DD...`. A file whose first data row starts `09/01/2026` is called out, because the merged result would be *mis-ordered* rather than obviously broken |
+| **Column count** | The first data row's field count against row 2's. A file that disagrees is a file whose values will not line up with the primary's columns |
+| **Timestamp conflicts** | After the merge, rows sharing a timestamp but differing anywhere else are counted and the first few named. All are **kept** — only the sources can say which is right — but a non-zero count means your sources disagree, and the primary now holds more than one row for some timestamps |
+
+Only each file's **first** data row is shape-checked. Checking every row of a
+300,000-row file costs more than the merge itself, and a file that is malformed
+is malformed from its first row.
+
+## The merge log
+
+A successful merge writes `<primary>.merge-log.txt` beside the primary:
+
+```
+Combine DAT Files - merge log
+Generated:      2026-09-08 18:42:44
+Primary:        C:\Data\SiteFolder\18421_SAA1_DATA.dat
+Rows before:    26184
+Header rows:    row 1 plus 3 special row(s)
+Encoding:       Auto
+Dry run:        False
+
+Per-file detail (rows read / new unique rows contributed):
+  MERGED   ...\18421_SAA_SAA1_DATA_2026-09-08.dat  -  read 4320, new 4184, moved to ...\Backup\...
+
+Totals:
+  Files merged:          1 of 1
+  New rows added:        4184
+  Rows in primary:       30368
+  Timestamp conflicts:   0
+  Pre-merge backup:      ...\Backup\18421_SAA1_DATA_20260908_184244.dat
+```
+
+It is the record of what went into the file once the console has scrolled away —
+which secondaries were merged, which were declined or failed, and every warning
+raised. A dry run writes no log, because it writes nothing at all.
 
 ## Speed, and what to do while it runs
 

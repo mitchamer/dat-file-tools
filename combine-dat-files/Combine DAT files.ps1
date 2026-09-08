@@ -79,12 +79,38 @@
        -SpecialRowCount <int>   Number of special/metadata rows after the header
                                 (default 3 -> rows 2-4 are preserved as-is).
        -NoBackup                Do not create a pre-merge backup of the primary.
+       -DryRun                  Report only - no dialogs, nothing written, moved
+                                or backed up. Says which secondaries would merge,
+                                how many rows each would add, and what the
+                                validation checks found.
        -Encoding <Auto|UTF8|UTF8BOM|ASCII|Unicode>
                                 Output encoding. Default Auto, which matches the
                                 primary's existing byte-order mark so merging does
                                 not change the file's encoding. ASCII also enables
                                 non-ASCII character checks.
          PS> .\'Combine DAT files.ps1' -SpecialRowCount 3 -Encoding Auto
+
+    WHAT IS CHECKED BEFORE IT WRITES
+    ================================
+    Three things are reported rather than silently baked into the primary:
+      * TIMESTAMP FORMAT. Sorting is a text sort, which is only correct while the
+        first column is YYYY-MM-DD... . The first data row of every file is
+        checked and a different shape is called out, because the merged output
+        would be mis-ordered rather than wrong-looking.
+      * COLUMN COUNT. The first data row's field count against the header's. A
+        file that disagrees is a file whose rows will not line up.
+      * TIMESTAMP CONFLICTS. After the merge, rows that share a timestamp but
+        differ anywhere else are counted and the first few named. They are all
+        KEPT - only the sources can say which is right - but a non-zero count
+        means the sources disagree and the primary now holds more than one row
+        for some timestamps.
+
+    THE MERGE LOG
+    =============
+    A successful merge writes '<primary>.merge-log.txt' beside the primary: every
+    secondary, rows read, rows contributed, every warning raised, and the totals.
+    It is the record of what went into the file after the console has scrolled
+    away. A dry run writes no log (it writes nothing at all).
 
     A NOTE ON THE ENCODING DEFAULT
     ==============================
@@ -105,6 +131,13 @@ param(
 
     [Parameter()]
     [switch]$NoBackup,
+
+    # Report what a merge would do - which secondaries would merge, how many rows
+    # each would add, and every validation warning - and write nothing. No dialog
+    # is shown, nothing is backed up, no secondary is moved. This is the pass to
+    # run first on a folder you have not merged before.
+    [Parameter()]
+    [switch]$DryRun,
 
     # Output encoding for the rewritten primary.
     #
@@ -312,6 +345,25 @@ function Split-CsvLine {
     }
     [void]$fields.Add($sb.ToString())
     return $fields.ToArray()
+}
+
+function Get-FirstFieldRaw {
+    <#
+        Returns the first CSV field of a row, quotes stripped, without splitting
+        the rest of the line. Called once per row by the timestamp-conflict scan,
+        where splitting a 275-column row to read field 1 would dominate the run.
+    #>
+    param([string]$Line)
+
+    if ([string]::IsNullOrEmpty($Line)) { return '' }
+    if ($Line[0] -eq '"') {
+        $end = $Line.IndexOf('"', 1)
+        if ($end -lt 0) { return $Line.Substring(1) }
+        return $Line.Substring(1, $end - 1)
+    }
+    $comma = $Line.IndexOf(',')
+    if ($comma -lt 0) { return $Line }
+    return $Line.Substring(0, $comma)
 }
 
 function Show-HeaderComparison {
@@ -558,7 +610,9 @@ function Show-HeaderComparison {
 }
 
 function Test-NonAsciiCharacters {
-    param([string]$FilePath)
+    # -NoPrompt reports and returns $true instead of asking. A dry run must not
+    # block on a console prompt, and it is not deciding anything anyway.
+    param([string]$FilePath, [switch]$NoPrompt)
 
     $lines = Get-Content $FilePath
     $nonAsciiLines = @()
@@ -571,6 +625,7 @@ function Test-NonAsciiCharacters {
 
     if ($nonAsciiLines.Count -gt 0) {
         Write-Warning "Non-ASCII characters found in '$FilePath' on lines: $($nonAsciiLines -join ', ')"
+        if ($NoPrompt) { return $true }
         $response = Read-Host "Do you want to continue? (Y/N)"
         return ($response -match '^(y|yes)$')
     }
@@ -901,9 +956,14 @@ function Invoke-CombineForPrimary {
         header dialog, notifies the user, and proceeds directly to the row-1
         file-info comparison.
 
-        Returns an object with FilesProcessed, RowsAdded, FinalRows, PrimaryPath,
-        Aborted. Aborted is $true when the user pressed "Exit All", meaning the
-        caller should stop processing any remaining primaries/groups too.
+        With -DryRun nothing is written, moved or backed up and no dialog is
+        shown: the two comparisons are made in code and reported, so the numbers
+        are what a real run would produce.
+
+        Returns an object with FilesProcessed, RowsAdded, FinalRows, TsConflicts,
+        Warnings, LogPath, PrimaryPath, Aborted. Aborted is $true when the user
+        pressed "Exit All", meaning the caller should stop processing any
+        remaining primaries/groups too.
     #>
     param(
         [Parameter(Mandatory)][string]$PrimaryPath,
@@ -911,13 +971,17 @@ function Invoke-CombineForPrimary {
         [int]$SpecialRowCount = 3,
         [string]$Encoding = 'Auto',
         [switch]$NoBackup,
-        [switch]$AutoProceedOnHeaderMatch
+        [switch]$AutoProceedOnHeaderMatch,
+        [switch]$DryRun
     )
 
     $result = [pscustomobject]@{
         FilesProcessed = 0
         RowsAdded      = 0
         FinalRows      = 0
+        TsConflicts    = 0
+        Warnings       = [System.Collections.Generic.List[string]]::new()
+        LogPath        = $null
         PrimaryPath    = $PrimaryPath
         Aborted        = $false
     }
@@ -942,7 +1006,10 @@ function Invoke-CombineForPrimary {
     # Parse primary structure
     $specialCountPrimary = [Math]::Min($SpecialRowCount, $linesPrimary.Count - 1)
     $originalHeader = $linesPrimary[0]
-    $originalSpecials = if ($specialCountPrimary -gt 0) { $linesPrimary[1..$specialCountPrimary] } else { @() }
+    # @() so a single special row stays an array. Without it $linesPrimary[1..1]
+    # is one string, and $originalSpecials[0] then indexes a character out of it
+    # rather than returning row 2 - which is the row the comparison hinges on.
+    $originalSpecials = @(if ($specialCountPrimary -gt 0) { $linesPrimary[1..$specialCountPrimary] } else { @() })
     $dataStartIndex = $specialCountPrimary + 1
     $currentData = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     # Indexed loop rather than $linesPrimary[$dataStartIndex..($count-1)]: the
@@ -956,15 +1023,50 @@ function Invoke-CombineForPrimary {
     $primaryName = [System.IO.Path]::GetFileName($PrimaryPath)
     Write-Host "`nPrimary: $primaryName  ($($currentData.Count) unique data rows)" -ForegroundColor Cyan
 
+    $log = [System.Collections.Generic.List[string]]::new()
+    $log.Add("Combine DAT Files - merge log")
+    $log.Add("Generated:      $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
+    $log.Add("Primary:        $PrimaryPath")
+    $log.Add("Rows before:    $($currentData.Count)")
+    $log.Add("Header rows:    row 1 plus $specialCountPrimary special row(s)")
+    $log.Add("Encoding:       $Encoding")
+    $log.Add("Dry run:        $([bool]$DryRun)")
+    $log.Add('')
+
+    # Field count comes from row 2 - the column names - which is the row a
+    # data row has to line up with.
+    $headerFieldCount = (Split-CsvLine -Line $(
+            if ($originalSpecials.Count -ge 1) { $originalSpecials[0] } else { $originalHeader }
+        )).Count
+
+    # The primary's own first data row is checked too: a text sort that is wrong
+    # for the primary is wrong for the merged result regardless of the secondaries.
+    if ($linesPrimary.Count -gt $dataStartIndex) {
+        $pTs = Get-FirstFieldRaw -Line $linesPrimary[$dataStartIndex]
+        if ($pTs -notmatch '^\d{4}-\d{2}-\d{2}') {
+            $msg = "Primary '$primaryName' first data timestamp is '$pTs', not YYYY-MM-DD. Rows are sorted as TEXT, so the merged order will be wrong for this format."
+            Write-Warning $msg
+            $result.Warnings.Add($msg)
+        }
+    }
+
     $backupFolder = Join-Path (Split-Path -Parent $PrimaryPath) "Backup"
     $primaryBackupPath = $null
-    if (-not $NoBackup) {
+    if ($DryRun) {
+        Write-Host "DRY RUN - nothing will be written, moved or backed up." -ForegroundColor Yellow
+    }
+    elseif (-not $NoBackup) {
         $primaryBackupPath = Backup-File -FilePath $PrimaryPath -BackupFolder $backupFolder
     }
 
     $filesProcessed = 0
     $totalRowsAdded = 0
     $aborted = $false
+    # The last write's sorted rows, reused for the conflict scan so the merged
+    # set is not sorted a second time.
+    $lastSorted = $null
+
+    $log.Add("Per-file detail (rows read / new unique rows contributed):")
 
     foreach ($secondaryPath in $SecondaryPaths) {
         Write-Host "`n$('=' * 70)" -ForegroundColor DarkGray
@@ -984,19 +1086,68 @@ function Invoke-CombineForPrimary {
             continue
         }
 
-        if ($Encoding -eq 'ASCII' -and -not (Test-NonAsciiCharacters -FilePath $secondaryPath)) {
+        if ($Encoding -eq 'ASCII' -and -not (Test-NonAsciiCharacters -FilePath $secondaryPath -NoPrompt:$DryRun)) {
             Write-Host "Skipping (non-ASCII declined): $secondaryName" -ForegroundColor Yellow
             continue
         }
 
         $header2 = $secondaryLines[0]
         $specialCount2 = [Math]::Min($SpecialRowCount, $secondaryLines.Count - 1)
-        $specials2 = if ($specialCount2 -gt 0) { $secondaryLines[1..$specialCount2] } else { @() }
+        # @() for the same reason as the primary's specials, and because a
+        # secondary holding exactly one data row is completely ordinary.
+        $specials2 = @(if ($specialCount2 -gt 0) { $secondaryLines[1..$specialCount2] } else { @() })
         $dataStart2 = $specialCount2 + 1
-        $data2 = if ($secondaryLines.Count -gt $dataStart2) { $secondaryLines[$dataStart2..($secondaryLines.Count - 1)] } else { @() }
+        $data2 = @(if ($secondaryLines.Count -gt $dataStart2) { $secondaryLines[$dataStart2..($secondaryLines.Count - 1)] } else { @() })
 
         $primaryRow2 = if ($originalSpecials.Count -ge 1) { $originalSpecials[0] } else { $originalHeader }
         $secondaryRow2 = if ($specials2.Count -ge 1) { $specials2[0] } else { $header2 }
+
+        # Shape checks on this file's FIRST data row only. Running them on every
+        # row costs more than the merge itself, and a file that is malformed is
+        # malformed from its first row.
+        if ($data2.Count -gt 0) {
+            $sTs = Get-FirstFieldRaw -Line $data2[0]
+            if ($sTs -notmatch '^\d{4}-\d{2}-\d{2}') {
+                $msg = "'$secondaryName' first data timestamp is '$sTs', not YYYY-MM-DD. Rows are sorted as TEXT, so merging it will mis-order the primary."
+                Write-Warning $msg
+                $result.Warnings.Add($msg)
+            }
+            $sFields = (Split-CsvLine -Line $data2[0]).Count
+            if ($sFields -ne $headerFieldCount) {
+                $msg = "'$secondaryName' first data row has $sFields field(s) but the header names $headerFieldCount. Its rows will not line up with the primary's."
+                Write-Warning $msg
+                $result.Warnings.Add($msg)
+            }
+        }
+
+        # A dry run decides nothing and shows nothing: the two comparisons the
+        # dialogs would put to you are made in code and reported instead.
+        if ($DryRun) {
+            $row2Same = ($primaryRow2 -eq $secondaryRow2)
+            $row1Same = ($originalHeader -eq $header2)
+
+            if (-not $row2Same) {
+                Write-Host "  WOULD ASK: header row (row 2) differs - a real run opens the comparison dialog here." -ForegroundColor Yellow
+                Write-Host "  Not counted below, because the answer would be yours." -ForegroundColor DarkGray
+                $log.Add("  WOULD ASK  $secondaryPath  -  row 2 differs")
+                continue
+            }
+
+            $rowsBefore = $currentData.Count
+            foreach ($line in $data2) {
+                if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$currentData.Add($line) }
+            }
+            $wouldAdd = $currentData.Count - $rowsBefore
+            $totalRowsAdded += $wouldAdd
+            $filesProcessed++
+
+            Write-Host "  WOULD MERGE: $secondaryName" -ForegroundColor Green
+            Write-Host "    row 2 matches$(if ($row1Same) { ', row 1 matches' } else { ', row 1 differs - a real run would ask about it' })" -ForegroundColor DarkGray
+            Write-Host "    would add $wouldAdd new unique row(s); primary would hold $($currentData.Count)" -ForegroundColor DarkGray
+            Write-Host "    would move to: $(Join-Path $backupFolder $secondaryName)" -ForegroundColor DarkGray
+            $log.Add("  WOULD MERGE  $secondaryPath  -  read $($data2.Count), new $wouldAdd")
+            continue
+        }
 
         # STEP 1: Compare the header row (row 2).
         if ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
@@ -1110,6 +1261,7 @@ function Invoke-CombineForPrimary {
 
             Move-Item -LiteralPath $tempPath -Destination $PrimaryPath -Force -ErrorAction Stop
             $tempPath = $null
+            $lastSorted = $sortedData
 
             $backupPath = Join-Path $backupFolder $secondaryName
             if (Test-Path $backupPath) {
@@ -1122,6 +1274,7 @@ function Invoke-CombineForPrimary {
             Move-Item -Path $secondaryPath -Destination $backupPath -Force -ErrorAction Stop
 
             Write-Host "Successfully merged and backed up: $secondaryName" -ForegroundColor Green
+            $log.Add("  MERGED   $secondaryPath  -  read $($data2.Count), new $rowsAdded, moved to $backupPath")
             $filesProcessed++
         }
         catch {
@@ -1132,7 +1285,60 @@ function Invoke-CombineForPrimary {
                 Remove-Item -LiteralPath $tempPath -Force -ErrorAction SilentlyContinue
             }
             Write-Warning "Primary left unchanged. The secondary was not moved."
+            $result.Warnings.Add("Write failed for '$secondaryName': $($_.Exception.Message). Primary left unchanged.")
+            $log.Add("  FAILED   $secondaryPath  -  $($_.Exception.Message)")
             continue
+        }
+    }
+
+    # Rows that share a timestamp but differ elsewhere. After the sort they are
+    # adjacent, so one walk finds them all - no second index, no extra memory.
+    # They are KEPT, not resolved: only the sources can say which is right.
+    if ($filesProcessed -gt 0) {
+        $finalSorted = if ($lastSorted) { $lastSorted } else { Get-SortedDataRows -Rows $currentData }
+        $conflicts = [System.Collections.Generic.List[string]]::new()
+        $prevTs = $null
+        foreach ($row in $finalSorted) {
+            $thisTs = Get-FirstFieldRaw -Line $row
+            if ($null -ne $prevTs -and $thisTs -eq $prevTs) {
+                $result.TsConflicts++
+                if ($conflicts.Count -lt 20) { $conflicts.Add($thisTs) }
+            }
+            $prevTs = $thisTs
+        }
+        if ($result.TsConflicts -gt 0) {
+            $msg = "$($result.TsConflicts) row(s) share a timestamp with another row but differ in content. ALL are kept. First few: $((($conflicts | Select-Object -Unique) -join ', '))"
+            Write-Warning $msg
+            $result.Warnings.Add($msg)
+        }
+    }
+
+    $log.Add('')
+    $log.Add("Totals:")
+    $log.Add("  Files merged:          $filesProcessed of $($SecondaryPaths.Count)")
+    $log.Add("  New rows added:        $totalRowsAdded")
+    $log.Add("  Rows in primary:       $($currentData.Count)")
+    $log.Add("  Timestamp conflicts:   $($result.TsConflicts)")
+    if ($primaryBackupPath) { $log.Add("  Pre-merge backup:      $primaryBackupPath") }
+    if ($aborted) { $log.Add("  STOPPED by 'Exit All' - remaining secondaries untouched.") }
+    if ($result.Warnings.Count -gt 0) {
+        $log.Add('')
+        $log.Add("Warnings:")
+        foreach ($w in $result.Warnings) { $log.Add("  - $w") }
+    }
+
+    # The log is the record of what went into the file once the console has
+    # scrolled away. A dry run writes nothing, this included.
+    if (-not $DryRun -and $filesProcessed -gt 0) {
+        $logPath = "$PrimaryPath.merge-log.txt"
+        try {
+            [System.IO.File]::WriteAllLines($logPath, $log, (New-Object System.Text.UTF8Encoding($false)))
+            $result.LogPath = $logPath
+            Write-Host "Merge log: $logPath" -ForegroundColor DarkGray
+        }
+        catch {
+            # A log that cannot be written must never fail a merge that succeeded.
+            Write-Warning "Could not write the merge log to '$logPath': $($_.Exception.Message)"
         }
     }
 
@@ -1222,6 +1428,9 @@ try {
 
         Write-Host "`nScanning folder for duplicates: $folder" -ForegroundColor Cyan
         Write-Host "(Top-level files only - subfolders are not scanned)" -ForegroundColor DarkGray
+        if ($DryRun) {
+            Write-Host "DRY RUN - reporting only. Nothing will be written, moved or backed up." -ForegroundColor Yellow
+        }
 
         $groups = @(Get-DuplicateGroups -Folder $folder)
 
@@ -1248,6 +1457,7 @@ try {
         $groupsVisited = 0
         $totalFiles = 0
         $totalRows = 0
+        $totalConflicts = 0
         $userAborted = $false
 
         foreach ($g in $groups) {
@@ -1263,10 +1473,12 @@ try {
                     -SpecialRowCount $SpecialRowCount `
                     -Encoding $Encoding `
                     -NoBackup:$NoBackup `
-                    -AutoProceedOnHeaderMatch
+                    -AutoProceedOnHeaderMatch `
+                    -DryRun:$DryRun
 
                 $totalFiles += $res.FilesProcessed
                 $totalRows += $res.RowsAdded
+                $totalConflicts += $res.TsConflicts
                 if ($res.FilesProcessed -gt 0) { $groupsMerged++ }
 
                 if ($res.Aborted) {
@@ -1283,24 +1495,28 @@ try {
         $remaining = $groups.Count - $groupsVisited
 
         Write-Host "`n$('=' * 70)" -ForegroundColor Green
-        Write-Host $(if ($userAborted) { "FOLDER SCAN STOPPED BY USER" } else { "FOLDER SCAN COMPLETE" }) -ForegroundColor Green
+        Write-Host $(if ($userAborted) { "FOLDER SCAN STOPPED BY USER" } elseif ($DryRun) { "DRY RUN COMPLETE - NOTHING WAS WRITTEN" } else { "FOLDER SCAN COMPLETE" }) -ForegroundColor Green
         Write-Host "$('=' * 70)" -ForegroundColor Green
         Write-Host "Groups found:      $($groups.Count)"
         Write-Host "Groups processed:  $groupsVisited"
-        Write-Host "Groups merged:     $groupsMerged"
-        Write-Host "Files merged:      $totalFiles"
-        Write-Host "Rows added total:  $totalRows"
+        Write-Host "$(if ($DryRun) { 'Groups that would merge:' } else { 'Groups merged:    ' }) $groupsMerged"
+        Write-Host "$(if ($DryRun) { 'Files that would merge: ' } else { 'Files merged:     ' }) $totalFiles"
+        Write-Host "$(if ($DryRun) { 'Rows that would be added:' } else { 'Rows added total: ' }) $totalRows"
+        Write-Host "Timestamp conflicts: $totalConflicts"
         if ($userAborted) { Write-Host "Groups skipped:    $remaining (Exit All)" -ForegroundColor Yellow }
         Write-Host "$('=' * 70)" -ForegroundColor Green
 
-        Show-Notification -Title $(if ($userAborted) { "Folder Scan Stopped" } else { "Folder Scan Complete" }) -Message (
-            $(if ($userAborted) { "Folder scan stopped by 'Exit All'.`n`n" } else { "Folder scan complete.`n`n" }) +
+        Show-Notification -Title $(if ($userAborted) { "Folder Scan Stopped" } elseif ($DryRun) { "Dry Run Complete" } else { "Folder Scan Complete" }) -Message (
+            $(if ($userAborted) { "Folder scan stopped by 'Exit All'.`n`n" }
+              elseif ($DryRun) { "Dry run complete - nothing was written, moved or backed up.`n`n" }
+              else { "Folder scan complete.`n`n" }) +
             "Folder:                 $folder`n" +
             "Groups found:       $($groups.Count)`n" +
             "Groups processed: $groupsVisited`n" +
-            "Groups merged:     $groupsMerged`n" +
-            "Files merged:         $totalFiles`n" +
-            "Rows added:           $totalRows" +
+            "$(if ($DryRun) { 'Would merge:        ' } else { 'Groups merged:     ' }) $groupsMerged`n" +
+            "$(if ($DryRun) { 'Files affected:      ' } else { 'Files merged:         ' }) $totalFiles`n" +
+            "$(if ($DryRun) { 'Rows to add:         ' } else { 'Rows added:           ' }) $totalRows`n" +
+            "Timestamp conflicts: $totalConflicts" +
             $(if ($userAborted) { "`nGroups skipped:     $remaining" } else { "" })
         )
         return
@@ -1337,7 +1553,8 @@ try {
         -SecondaryPaths $secondaryFiles `
         -SpecialRowCount $SpecialRowCount `
         -Encoding $Encoding `
-        -NoBackup:$NoBackup
+        -NoBackup:$NoBackup `
+        -DryRun:$DryRun
 
     if ($res.Aborted) {
         Write-Host "`nStopped by 'Exit All'. Remaining selected files were not processed." -ForegroundColor Yellow
@@ -1357,16 +1574,20 @@ try {
     }
     else {
         Write-Host "`n$('=' * 70)" -ForegroundColor Green
-        Write-Host "MERGE COMPLETE" -ForegroundColor Green
+        Write-Host $(if ($DryRun) { "DRY RUN COMPLETE - NOTHING WAS WRITTEN" } else { "MERGE COMPLETE" }) -ForegroundColor Green
         Write-Host "$('=' * 70)" -ForegroundColor Green
-        Write-Host "Files processed: $($res.FilesProcessed)"
-        Write-Host "Total new rows added: $($res.RowsAdded)"
+        Write-Host "$(if ($DryRun) { 'Files that would merge' } else { 'Files processed' }): $($res.FilesProcessed)"
+        Write-Host "$(if ($DryRun) { 'Rows that would be added' } else { 'Total new rows added' }): $($res.RowsAdded)"
         Write-Host "Final unique data rows: $($res.FinalRows)"
-        Write-Host "Updated file: $primaryPath"
+        Write-Host "Timestamp conflicts: $($res.TsConflicts)"
+        Write-Host "$(if ($DryRun) { 'Unchanged file' } else { 'Updated file' }): $primaryPath"
         Write-Host "$('=' * 70)" -ForegroundColor Green
 
-        Show-Notification -Title "Merge Complete" -Message (
-            "Merging complete.`n`nFiles processed: $($res.FilesProcessed)`nTotal rows: $($res.FinalRows)`n`nFinal file:`n$primaryPath"
+        Show-Notification -Title $(if ($DryRun) { "Dry Run Complete" } else { "Merge Complete" }) -Message (
+            $(if ($DryRun) { "Dry run complete - nothing was written.`n`nFiles that would merge: $($res.FilesProcessed)`nRows the primary would hold: $($res.FinalRows)" }
+              else { "Merging complete.`n`nFiles processed: $($res.FilesProcessed)`nTotal rows: $($res.FinalRows)" }) +
+            "`nTimestamp conflicts: $($res.TsConflicts)`n`n" +
+            $(if ($DryRun) { "Unchanged file:" } else { "Final file:" }) + "`n$primaryPath"
         )
     }
 }
