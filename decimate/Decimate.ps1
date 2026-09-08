@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
-    Decimate (v3)
-    -------------
+    Decimate
+    --------
     Thins time-series CSV / DAT files by keeping only rows that land on a fixed
     interval - hourly, six-hourly, or daily. Header rows are detected and
     preserved, the original is copied to a Backup folder, and the thinned result
@@ -37,14 +37,14 @@
     Interactive - a settings dialog, then a file picker, then a per-file
     confirmation showing rows in / rows kept:
 
-        .\Decimate_v3.ps1
+        .\Decimate.ps1
 
     Non-interactive - supplying -Mode suppresses all dialogs:
 
-        .\Decimate_v3.ps1 -Mode Hourly -RetainFirst 5 `
+        .\Decimate.ps1 -Mode Hourly -RetainFirst 5 `
                           -Path 'C:\Data\Station1.csv','C:\Data\Station2.dat'
 
-        .\Decimate_v3.ps1 -Mode Daily -Path 'C:\Data\*.dat' -WhatIf
+        .\Decimate.ps1 -Mode Daily -Path 'C:\Data\*.dat' -WhatIf
 
     The v2 parameter names (-ModeParam, -RetainParam, -FilesParam) still work as
     aliases, so existing scheduled calls keep running.

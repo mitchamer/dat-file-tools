@@ -11,24 +11,24 @@ Windows Registry Editor Version 5.00
 
 ; Right-click a FILE -> use it as the PRIMARY file (direct mode)
 [HKEY_CLASSES_ROOT\*\shell\CombineDATFiles]
-@="Combine Time Series Files_v9"
+@="Combine Time Series Files"
 "Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\*\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%1\""
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files.ps1\" \"%1\""
 
 ; Right-click a FOLDER -> scan that folder in FOLDER MODE (auto-group duplicates)
 [HKEY_CLASSES_ROOT\Directory\shell\CombineDATFiles]
-@="Combine Time Series Files_v9 (scan folder)"
+@="Combine Time Series Files (scan folder)"
 "Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\Directory\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%1\""
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files.ps1\" \"%1\""
 
 ; Right-click the FOLDER BACKGROUND (empty space inside a folder) -> scan current folder
 [HKEY_CLASSES_ROOT\Directory\Background\shell\CombineDATFiles]
-@="Combine Time Series Files_v9 (scan this folder)"
+@="Combine Time Series Files (scan this folder)"
 "Icon"="\"C:\\Script\\combine-dat-files\\CombineDatFiles.ico\""
 
 [HKEY_CLASSES_ROOT\Directory\Background\shell\CombineDATFiles\command]
-@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files_v9.ps1\" \"%V\""
+@="powershell.exe -NoProfile -ExecutionPolicy Bypass -File \"C:\\Script\\combine-dat-files\\Combine DAT files.ps1\" \"%V\""

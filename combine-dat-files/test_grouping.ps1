@@ -4,7 +4,7 @@
 # Only the grouping functions are loaded (via the AST), so no WinForms assembly
 # is needed and no dialog can open.
 $ErrorActionPreference = 'Stop'
-$src = Join-Path $PSScriptRoot 'Combine DAT files_v9.ps1'
+$src = Join-Path $PSScriptRoot 'Combine DAT files.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($src, [ref]$null, [ref]$null)
 $want = 'Split-CsvLine','Get-Toa5EnvironmentFields','Get-DuplicateGroups','Add-Toa5SerialTableGroups'
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {

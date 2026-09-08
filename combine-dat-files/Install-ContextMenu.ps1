@@ -28,10 +28,10 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $scriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Path }
-$target = Join-Path $scriptDir 'Combine DAT files_v9.ps1'
+$target = Join-Path $scriptDir 'Combine DAT files.ps1'
 
 if (-not (Test-Path $target)) {
-    throw "Cannot find 'Combine DAT files_v9.ps1' next to this installer ($scriptDir)."
+    throw "Cannot find 'Combine DAT files.ps1' next to this installer ($scriptDir)."
 }
 
 if ($AllUsers) {

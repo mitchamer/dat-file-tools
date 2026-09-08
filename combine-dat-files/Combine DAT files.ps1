@@ -1,6 +1,6 @@
 <#
-    Combine DAT Files (v9)
-    ----------------------
+    Combine DAT Files
+    -----------------
     Combines structured, timestamp-based data files (TOA5 .dat/.csv/.txt) into a
     single primary file. Preserves the primary file's header + special rows,
     visually compares headers before merging, de-duplicates and sorts data, and
@@ -47,14 +47,14 @@
             rather than merged into a guess.
        Only files sitting directly in the chosen folder are scanned - subfolders
        are NOT entered.
-         PS> .\'Combine DAT files_v9.ps1'
+         PS> .\'Combine DAT files.ps1'
          (then click "Yes" and pick a folder)
 
     2) MANUAL MODE (pick files yourself)
        Run with NO primary file and choose "No" at the mode prompt (or select a
        primary via the dialog). You pick the primary file, then one or more
        secondary files to merge into it.
-         PS> .\'Combine DAT files_v9.ps1'
+         PS> .\'Combine DAT files.ps1'
          (then click "No", pick a primary, then pick secondaries)
 
     3) DIRECT / RIGHT-CLICK MODE (file or folder supplied up front)
@@ -63,9 +63,9 @@
        Pass a FOLDER as the first argument and the script runs FOLDER MODE on
        that folder directly (no prompt, no folder picker). This is what the
        right-click context-menu entries use.
-         PS> .\'Combine DAT files_v9.ps1' 'C:\Data\TM_Site_Diagnostics.dat'
-         PS> .\'Combine DAT files_v9.ps1' -PrimaryFile 'C:\Data\TM_Site_Diagnostics.dat'
-         PS> .\'Combine DAT files_v9.ps1' 'C:\Data\SiteFolder'   (folder mode)
+         PS> .\'Combine DAT files.ps1' 'C:\Data\TM_Site_Diagnostics.dat'
+         PS> .\'Combine DAT files.ps1' -PrimaryFile 'C:\Data\TM_Site_Diagnostics.dat'
+         PS> .\'Combine DAT files.ps1' 'C:\Data\SiteFolder'   (folder mode)
 
     COMPARISON DIALOG BUTTONS
        Proceed              Merge this secondary into the primary.
@@ -84,7 +84,7 @@
                                 primary's existing byte-order mark so merging does
                                 not change the file's encoding. ASCII also enables
                                 non-ASCII character checks.
-         PS> .\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding Auto
+         PS> .\'Combine DAT files.ps1' -SpecialRowCount 3 -Encoding Auto
 
     A NOTE ON THE ENCODING DEFAULT
     ==============================

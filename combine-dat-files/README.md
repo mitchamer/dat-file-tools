@@ -1,4 +1,4 @@
-# Combine DAT files (v9)
+# Combine DAT files
 
 Merges a table's scattered copies — the collected file, its `.bak`/`.backup`
 duplicates, and re-collected or card-converted downloads — into one file, showing
@@ -52,7 +52,7 @@ file whose TOA5 row 1 shows the same logger serial and table name, then runs the
 two-step comparison per group.
 
 ```powershell
-.\'Combine DAT files_v9.ps1'
+.\'Combine DAT files.ps1'
 ```
 
 Only files sitting **directly** in the chosen folder are scanned — subfolders are
@@ -70,9 +70,9 @@ Pass a file and the mode prompt is skipped; pass a folder and it runs folder mod
 directly. This is what the right-click entries use.
 
 ```powershell
-.\'Combine DAT files_v9.ps1' 'C:\Data\TM_Site_Diagnostics.dat'
-.\'Combine DAT files_v9.ps1' -PrimaryFile 'C:\Data\TM_Site_Diagnostics.dat'
-.\'Combine DAT files_v9.ps1' 'C:\Data\SiteFolder'
+.\'Combine DAT files.ps1' 'C:\Data\TM_Site_Diagnostics.dat'
+.\'Combine DAT files.ps1' -PrimaryFile 'C:\Data\TM_Site_Diagnostics.dat'
+.\'Combine DAT files.ps1' 'C:\Data\SiteFolder'
 ```
 
 ## Right-click menu
@@ -205,7 +205,7 @@ The banner is green when values are identical, red when they differ.
 | `-Encoding <Auto\|UTF8\|UTF8BOM\|ASCII\|Unicode>` | Output encoding. **Default `Auto`** — matches the primary's existing byte-order mark. `ASCII` also enables non-ASCII character checks |
 
 ```powershell
-.\'Combine DAT files_v9.ps1' -SpecialRowCount 3 -Encoding Auto
+.\'Combine DAT files.ps1' -SpecialRowCount 3 -Encoding Auto
 ```
 
 ## Speed, and what to do while it runs

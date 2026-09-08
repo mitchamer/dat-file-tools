@@ -5,7 +5,7 @@
 # dialogs open. Headers are identical between fixtures, which is the case that
 # auto-proceeds.
 $ErrorActionPreference = 'Stop'
-$combine = Join-Path $PSScriptRoot 'Combine DAT files_v9.ps1'
+$combine = Join-Path $PSScriptRoot 'Combine DAT files.ps1'
 $fail = 0
 function Check($name, $cond, $detail) {
     if ($cond) { Write-Host "  [ok]   $name" -ForegroundColor DarkGray }

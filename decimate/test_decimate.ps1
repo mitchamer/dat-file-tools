@@ -1,7 +1,7 @@
-# Exercises Decimate_v3 against the cases that mattered in review.
+# Exercises Decimate against the cases that mattered in review.
 # Each case builds a fresh fixture, runs non-interactively, and asserts.
 $ErrorActionPreference = 'Stop'
-$script = Join-Path $PSScriptRoot 'Decimate_v3.ps1'
+$script = Join-Path $PSScriptRoot 'Decimate.ps1'
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('dec_test_' + [guid]::NewGuid().ToString('N').Substring(0,8))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
 $fail = 0

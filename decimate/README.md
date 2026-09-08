@@ -1,4 +1,4 @@
-# Decimate (v3)
+# Decimate
 
 Thins a time-series file to rows landing on a fixed interval — hourly, six-hourly
 or daily — copying the full dataset into `Backup` first and showing what the
@@ -39,7 +39,7 @@ Interactively — a settings dialog, then a multi-select file picker, then one
 confirmation per file:
 
 ```powershell
-.\Decimate_v3.ps1
+.\Decimate.ps1
 ```
 
 The confirmation is the point: rows in, rows kept, rows dropped, and the retained
@@ -49,16 +49,16 @@ time range, **before** anything is written. Buttons are `Proceed` / `Skip file` 
 Non-interactively — supplying `-Mode` suppresses all dialogs:
 
 ```powershell
-.\Decimate_v3.ps1 -Mode Hourly -RetainFirst 5 `
+.\Decimate.ps1 -Mode Hourly -RetainFirst 5 `
                   -Path 'C:\Data\Station1.csv','C:\Data\Station2.dat'
 
-.\Decimate_v3.ps1 -Mode Daily -Path 'C:\Data\*.dat' -WhatIf
+.\Decimate.ps1 -Mode Daily -Path 'C:\Data\*.dat' -WhatIf
 ```
 
 One summary object is emitted per file, so runs can be captured:
 
 ```powershell
-$r = .\Decimate_v3.ps1 -Mode Hourly -Path 'C:\Data\*.dat'
+$r = .\Decimate.ps1 -Mode Hourly -Path 'C:\Data\*.dat'
 $r | Where-Object RowsKept -eq 0
 ```
 
@@ -112,7 +112,7 @@ a later unreadable row counts as bad data rather than a header.
 ## Tests
 
 ```powershell
-.\test_decimate_v3.ps1
+.\test_decimate.ps1
 ```
 
 12 cases, 34 assertions, covering what the review turned on: aligned data,

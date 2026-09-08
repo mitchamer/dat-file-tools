@@ -40,16 +40,16 @@ Clone or download, then:
 
 ```powershell
 # merge a folder's duplicates, approving each header comparison
-.\combine-dat-files\'Combine DAT files_v9.ps1'
+.\combine-dat-files\'Combine DAT files.ps1'
 
 # optional: add Explorer right-click entries for it (per-user, no admin)
 .\combine-dat-files\Install-ContextMenu.ps1
 
 # thin a file to hourly, previewing before it writes
-.\decimate\Decimate_v3.ps1
+.\decimate\Decimate.ps1
 
 # see what decimating would do without writing anything
-.\decimate\Decimate_v3.ps1 -Mode Hourly -Path 'C:\Data\*.dat' -WhatIf
+.\decimate\Decimate.ps1 -Mode Hourly -Path 'C:\Data\*.dat' -WhatIf
 ```
 
 Run either script with no arguments and it will prompt for everything it needs.
