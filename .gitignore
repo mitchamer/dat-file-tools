@@ -16,3 +16,6 @@ desktop.ini
 
 # Generated preview sheets from make_icon.py experiments
 icon_preview.png
+
+#Training client data
+training/

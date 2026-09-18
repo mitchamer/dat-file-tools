@@ -34,17 +34,20 @@
        The script groups two kinds of duplicate, then for each group compares
        row 2 (header) then row 1 (file info):
          a) backup-style duplicates
-            (.bak/.backup/.backup1/.1/.old/.orig/.copy), and
-         b) data files that TOA5 row 1 says came from the SAME LOGGER SERIAL and
-            the SAME TABLE - matched on those two fields alone, so the file name
-            plays no part in the match:
+            (.bak/.backup/.backup1/.1/.old/.orig/.copy), including STACKED
+            suffixes as LoggerNet writes them - Foo.dat.backup, Foo.dat.1.backup
+            and Foo.dat.2.backup all group onto Foo.dat, and
+         b) data files that TOA5 row 1 says came from the SAME MODEL, the SAME
+            LOGGER SERIAL and the SAME TABLE - matched on those three fields
+            alone, so the file name plays no part in the match. Model is in the
+            match because two different logger types can share a serial:
               18421_SAA_SAA1_DATA_2026-09-08.dat -> 18421_SAA1_DATA.dat
-            Row 1 is what the logger itself wrote, so renamed, re-collected and
-            card-converted files all match. Extensions must be the same. Within
-            a group the primary is the one file whose name does NOT end in a date
-            stamp (the file the logger software keeps appending to); if that
-            leaves two candidates, or none, the group is reported and skipped
-            rather than merged into a guess.
+            Row 1 is what the logger itself wrote, so renamed files, local manual
+            downloads and remote manual collections all match. Extensions must be
+            the same. Within a group the primary is the one file whose name does
+            NOT end in a date stamp (the file the logger software keeps appending
+            to); if that leaves two candidates, or none, the group is reported
+            and skipped rather than merged into a guess.
        Only files sitting directly in the chosen folder are scanned - subfolders
        are NOT entered.
          PS> .\'Combine DAT files.ps1'
@@ -68,12 +71,83 @@
          PS> .\'Combine DAT files.ps1' 'C:\Data\SiteFolder'   (folder mode)
 
     COMPARISON DIALOG BUTTONS
-       Proceed              Merge this secondary into the primary.
+       Proceed              Merge this secondary into the primary as it stands.
+                            Disabled (and not the Enter default) when the headers
+                            differ and Align is unavailable - merging as-is would
+                            put values under the wrong names. The file is skipped.
+       Align Columns
+         & Merge            Shown only when the headers differ, the column NAMES
+                            can be matched, and the recency check below passed.
+                            Rewrites the secondary's data rows into the primary's
+                            column order first. See COLUMN ALIGNMENT.
        Decline (Skip File)  Skip this secondary only; the scan continues with the
                             next duplicate / next group. Esc or closing the window
-                            does the same.
+                            does the same. Enter does this too when Align is
+                            blocked, so a re-ordered secondary cannot be merged
+                            under the primary's names by accident.
        Exit All             Stop immediately - no further files or groups are
                             processed. Already-merged files stay merged.
+
+    THE RECENCY CHECK - "ARE YOU SURE?"
+    ===================================
+    Before a secondary is merged, the primary must be the newer file in BOTH
+    senses: a later file modified time, AND a later last timestamp in column 1 of
+    its last row. Both, because either alone can lie - copying a file forward
+    moves its modified time without adding a reading, and a file can hold newer
+    readings while sitting untouched on disk.
+
+    When both hold, this is the ordinary merge: an old archive going into the
+    file automatic collection is still appending to. When either fails, the files
+    are probably the wrong way round - the newer data is in the SECONDARY, and
+    merging it into the primary puts the combined result somewhere nothing
+    collects into. The script says which check failed and asks "are you sure?",
+    defaulting to No. Answering Yes merges anyway and records the override in the
+    merge log.
+
+    The primary's modified time and last timestamp are read ONCE, before the
+    first merge. Re-reading them per secondary would be meaningless: the first
+    merge rewrites the primary, so its modified time becomes "just now".
+
+    COLUMN ALIGNMENT
+    ================
+    A secondary whose header row lists the same measurements in a different
+    shape - columns added, removed, or re-ordered - cannot simply be merged: its
+    fields would land under the wrong column names. "Align Columns & Merge"
+    rewrites its data rows into the primary's column order first, matching on the
+    column NAMES in row 2 (case-insensitive), which is the only thing in the file
+    that says what a field means.
+
+      * a primary column the secondary lacks   -> filled with NAN
+      * a secondary column the primary lacks   -> DROPPED, named in the merge log,
+                                                  and the whole secondary is filed
+                                                  under Backup\RemovedColumns-NotMerged
+                                                  rather than Backup, so the values
+                                                  that did not merge stay recoverable
+      * shared columns in a different order    -> re-ordered, and then PROVED: see below
+
+    Alignment is refused outright, with no override, when:
+      * the recency check above did not pass on BOTH counts. Rewriting every
+        field of every row is only safe in the direction old-archive into
+        live-file, and recency is the only evidence of which direction that is.
+        There is no "are you sure" here - the file is skipped and the scan moves
+        on to the next one.
+      * a column name is repeated in either header, so a field cannot be matched
+        to one source.
+      * the secondary has no column matching the primary's first column, so its
+        timestamps cannot be placed.
+
+    THE RE-ORDER PROOF
+    ==================
+    Adding or removing a column leaves every other column where it was. A
+    RE-ORDER moves every value in the file, and a wrong map is silent - the rows
+    still parse, they are just wrong. So a re-order is not merged on trust: the
+    merge is done in memory and each column's distribution is shown three ways
+    side by side - the primary before, the secondary after alignment, and the
+    merged result - as min / p5 / mean / p95 / max for numeric columns, and the
+    commonest values with their counts (200x"NAN", 3x"TRUE") for text ones.
+    A mis-mapped column shows up at once, because it reads like a different
+    measurement than the column it now sits beside. Nothing has been written at
+    that point; declining costs nothing. The same table goes into the merge log.
 
     OPTIONAL PARAMETERS (all modes)
        -SpecialRowCount <int>   Number of special/metadata rows after the header
@@ -240,7 +314,9 @@ function Get-SortedDataRows {
     # comparison. On a 55 MB merge that single line was the five minutes. This is
     # one .NET call with no per-row PowerShell work.
     [Array]::Sort($values, [System.StringComparer]::Ordinal)
-    return $values
+    # Unary comma: a 1-element string[] must not unroll into a single string,
+    # or the writer iterates characters and the output is garbage.
+    return ,$values
 }
 
 # ---------------------------------------------------------------------------
@@ -366,13 +442,324 @@ function Get-FirstFieldRaw {
     return $Line.Substring(0, $comma)
 }
 
+function Split-CsvFieldsRaw {
+    <#
+        Splits a row into its fields but returns each field EXACTLY as written,
+        quotes and all. Split-CsvLine strips quoting, which is what you want to
+        compare column NAMES; it is the wrong tool for moving DATA between
+        columns, because re-joining its output would rewrite
+        "2026-09-16 12:00:00" as 2026-09-16 12:00:00 and the row would then no
+        longer de-duplicate against the primary's identical row. Column
+        alignment shuffles these raw substrings, so a merged row is
+        byte-identical to the one the logger wrote.
+    #>
+    param([string]$Line)
+
+    $fields = [System.Collections.Generic.List[string]]::new()
+    $start = 0
+    $inQuotes = $false
+    for ($i = 0; $i -lt $Line.Length; $i++) {
+        $ch = $Line[$i]
+        if ($ch -eq '"') {
+            # A doubled "" inside a quoted field toggles twice and lands back
+            # inside, which is the behaviour the comma test needs.
+            $inQuotes = -not $inQuotes
+        }
+        elseif ($ch -eq ',' -and -not $inQuotes) {
+            [void]$fields.Add($Line.Substring($start, $i - $start))
+            $start = $i + 1
+        }
+    }
+    [void]$fields.Add($Line.Substring($start))
+    return $fields.ToArray()
+}
+
+function Get-LastDataTimestamp {
+    <#
+        First column of the last non-blank row of an already-read file. That is
+        the newest reading the file holds, and it is the half of the recency
+        check that file modification time cannot give you: copying a file
+        forward, restoring it from a backup or touching it on a share all move
+        the modified time without adding a single reading.
+    #>
+    param([string[]]$Lines, [int]$DataStartIndex)
+
+    for ($i = $Lines.Count - 1; $i -ge $DataStartIndex; $i--) {
+        if (-not [string]::IsNullOrWhiteSpace($Lines[$i])) {
+            return (Get-FirstFieldRaw -Line $Lines[$i])
+        }
+    }
+    return $null
+}
+
+function Test-PrimaryIsNewer {
+    <#
+        The primary must be newer than the secondary in BOTH senses before a
+        merge is anything other than a question:
+
+          * file modified time, and
+          * the last timestamp actually inside the file.
+
+        Why both. When automatic collection is appending to the file the logger
+        software owns, the current file is newer on both counts and the merge is
+        the ordinary one - old archive into live file. When either count runs the
+        other way the roles are probably reversed: the "primary" is the stale
+        copy and merging into it puts the newly collected rows in a file nothing
+        collects into, where the next collection will not find them.
+
+        Timestamps compare as ordinal text, the same assumption the row sort
+        already makes. A timestamp that is not YYYY-MM-DD cannot be compared
+        that way, so it counts as a failure rather than a pass - an unreadable
+        check is not a passed check.
+
+        Returns Ok plus the two halves and a human-readable reason.
+    #>
+    param(
+        [datetime]$PrimaryModified,
+        [datetime]$SecondaryModified,
+        [string]$PrimaryLastTs,
+        [string]$SecondaryLastTs
+    )
+
+    $mtimeOk = ($PrimaryModified -gt $SecondaryModified)
+
+    $comparable = ($PrimaryLastTs -match '^\d{4}-\d{2}-\d{2}') -and ($SecondaryLastTs -match '^\d{4}-\d{2}-\d{2}')
+    $tsOk = $comparable -and ([string]::CompareOrdinal($PrimaryLastTs, $SecondaryLastTs) -gt 0)
+
+    $reasons = [System.Collections.Generic.List[string]]::new()
+    if (-not $mtimeOk) {
+        $reasons.Add(("file modified time: secondary $($SecondaryModified.ToString('yyyy-MM-dd HH:mm:ss')) is not older than primary $($PrimaryModified.ToString('yyyy-MM-dd HH:mm:ss'))"))
+    }
+    if (-not $comparable) {
+        $reasons.Add("last timestamp: '$PrimaryLastTs' vs '$SecondaryLastTs' - not YYYY-MM-DD, so which is newer cannot be decided")
+    }
+    elseif (-not $tsOk) {
+        $reasons.Add("last timestamp in file: secondary '$SecondaryLastTs' is not older than primary '$PrimaryLastTs'")
+    }
+
+    return [pscustomobject]@{
+        Ok                = ($mtimeOk -and $tsOk)
+        MtimeOk           = $mtimeOk
+        TsOk              = $tsOk
+        TsComparable      = $comparable
+        Reason            = ($reasons -join '; ')
+        # The raw values as well as the verdict, so the dialog can lay the two
+        # files out side by side instead of re-parsing a sentence.
+        PrimaryModified   = $PrimaryModified
+        SecondaryModified = $SecondaryModified
+        PrimaryLastTs     = $PrimaryLastTs
+        SecondaryLastTs   = $SecondaryLastTs
+        Summary           = ("primary modified $($PrimaryModified.ToString('yyyy-MM-dd HH:mm:ss')), last row '$PrimaryLastTs'" +
+                             "`nsecondary modified $($SecondaryModified.ToString('yyyy-MM-dd HH:mm:ss')), last row '$SecondaryLastTs'")
+    }
+}
+
+function Get-ColumnAlignment {
+    <#
+        Works out how to rewrite the secondary's data rows into the primary's
+        column order, matching on the column NAMES in row 2 - the only thing in
+        a TOA5 file that says what a field means. Position cannot be trusted
+        here; that is the whole problem being solved.
+
+        Three outcomes per column:
+          * name found in the secondary        -> that field is copied across
+          * primary column the secondary lacks -> filled with NAN
+          * secondary column the primary lacks -> dropped (and named, so the
+            merge log and the backup folder can say what was lost)
+
+        Refused outright when the mapping would be a guess: a duplicated column
+        name on either side, or a first column (the timestamp) with no match.
+
+        Reordered is TRUE only when the columns the two files SHARE appear in a
+        different relative order. Columns purely added or removed leave the rest
+        in order and need no further proof; a genuine re-order does, because
+        every value in the file moves and a wrong map is silent.
+
+        Returns Ok, Reason, Map (one entry per primary column, -1 = fill NAN),
+        Filled, Dropped, Reordered, and NoOp for headers that already agree.
+    #>
+    param([string]$PrimaryHeaderRow, [string]$SecondaryHeaderRow)
+
+    $result = [pscustomobject]@{
+        Ok        = $false
+        Reason    = ''
+        Map       = @()
+        Filled    = @()
+        Dropped   = @()
+        Reordered = $false
+        NoOp      = $false
+    }
+
+    $pn = @(Split-CsvLine -Line $PrimaryHeaderRow   | ForEach-Object { $_.Trim() })
+    $sn = @(Split-CsvLine -Line $SecondaryHeaderRow | ForEach-Object { $_.Trim() })
+
+    # A repeated column name makes "which field does this name mean" a guess,
+    # and a guess is exactly what this function exists to avoid.
+    $findDupes = {
+        param([string[]]$Names)
+        return @($Names | Group-Object -Property { $_.ToLowerInvariant() } | Where-Object { $_.Count -gt 1 })
+    }
+    $dupP = & $findDupes $pn
+    $dupS = & $findDupes $sn
+    if ($dupP.Count -gt 0 -or $dupS.Count -gt 0) {
+        $side = if ($dupP.Count -gt 0) { 'primary' } else { 'secondary' }
+        $dupes = if ($dupP.Count -gt 0) { $dupP } else { $dupS }
+        $result.Reason = "the $side header repeats the column name(s) $(($dupes | ForEach-Object { "'$($_.Group[0])'" }) -join ', '), so a column cannot be matched to one source."
+        return $result
+    }
+
+    $lookup = @{}
+    for ($i = 0; $i -lt $sn.Count; $i++) { $lookup[$sn[$i].ToLowerInvariant()] = $i }
+
+    $map = New-Object 'int[]' $pn.Count
+    $filled = [System.Collections.Generic.List[string]]::new()
+    $used = [System.Collections.Generic.HashSet[int]]::new()
+    for ($i = 0; $i -lt $pn.Count; $i++) {
+        $k = $pn[$i].ToLowerInvariant()
+        if ($lookup.ContainsKey($k)) {
+            $map[$i] = $lookup[$k]
+            [void]$used.Add($map[$i])
+        }
+        else {
+            $map[$i] = -1
+            $filled.Add($pn[$i])
+        }
+    }
+
+    if ($map.Count -eq 0 -or $map[0] -lt 0) {
+        $result.Reason = "the secondary has no column named '$(if ($pn.Count) { $pn[0] } else { '' })', so its timestamps cannot be placed."
+        return $result
+    }
+    if ($filled.Count -eq $pn.Count) {
+        $result.Reason = "the two headers share no column names at all."
+        return $result
+    }
+
+    $dropped = [System.Collections.Generic.List[string]]::new()
+    for ($j = 0; $j -lt $sn.Count; $j++) {
+        if (-not $used.Contains($j)) { $dropped.Add($sn[$j]) }
+    }
+
+    # Shared columns out of their original relative order = a real re-order.
+    $reordered = $false
+    $prev = -1
+    foreach ($j in $map) {
+        if ($j -lt 0) { continue }
+        if ($j -lt $prev) { $reordered = $true; break }
+        $prev = $j
+    }
+
+    $result.Ok = $true
+    $result.Map = $map
+    $result.Filled = $filled.ToArray()
+    $result.Dropped = $dropped.ToArray()
+    $result.Reordered = $reordered
+    $result.NoOp = (-not $reordered -and $filled.Count -eq 0 -and $dropped.Count -eq 0)
+    return $result
+}
+
+function ConvertTo-AlignedRow {
+    param([string]$Line, [int[]]$Map)
+
+    $raw = Split-CsvFieldsRaw -Line $Line
+    $out = New-Object 'string[]' $Map.Length
+    for ($i = 0; $i -lt $Map.Length; $i++) {
+        $j = $Map[$i]
+        # A short row - ragged output, a truncated download - fills NAN too
+        # rather than throwing, which is the same answer as a missing column.
+        $out[$i] = if ($j -ge 0 -and $j -lt $raw.Length) { $raw[$j] } else { 'NAN' }
+    }
+    return [string]::Join(',', $out)
+}
+
+function Get-ColumnStats {
+    <#
+        One column's distribution, as the proof that a re-order put the values
+        where the names say they go. Numeric columns give n/min/p5/mean/p95/max;
+        text columns give the commonest values with their counts. NAN and empty
+        are missing values in a numeric column, not text.
+
+        Percentiles are nearest-rank on the sorted values.
+    #>
+    # $Rows is left untyped so a HashSet can be passed straight in - typing it
+    # [string[]] would make PowerShell copy the whole merged set into an array
+    # once per column, which on a wide table is the cost of the merge again.
+    param($Rows, [int]$Index, [int]$TopText = 3)
+
+    $nums = [System.Collections.Generic.List[double]]::new()
+    $text = @{}
+    $missing = 0
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+
+    foreach ($row in $Rows) {
+        $f = Split-CsvFieldsRaw -Line $row
+        if ($Index -ge $f.Length) { $missing++; continue }
+        $v = $f[$Index].Trim().Trim('"')
+        if ($v -eq '' -or $v -eq 'NAN' -or $v -eq 'NaN' -or $v -eq 'nan') { $missing++; continue }
+
+        $d = 0.0
+        if ([double]::TryParse($v, [System.Globalization.NumberStyles]::Float, $inv, [ref]$d)) {
+            $nums.Add($d)
+        }
+        else {
+            if ($text.ContainsKey($v)) { $text[$v]++ } else { $text[$v] = 1 }
+        }
+    }
+
+    if ($text.Count -gt 0) {
+        $total = 0
+        foreach ($c in $text.Values) { $total += $c }
+        $extra = if ($nums.Count -gt 0) { "  num=$($nums.Count)" } else { '' }
+
+        # Every value distinct - a timestamp or an ID column. Counting them all
+        # at 1x says nothing and is the widest cell in the grid; the range is the
+        # thing worth seeing.
+        if ($text.Count -eq $total) {
+            $sorted = @($text.Keys | Sort-Object)
+            return "n=$total  all distinct  first=$($sorted[0])  last=$($sorted[-1])  NAN/blank=$missing$extra"
+        }
+
+        $top = @($text.GetEnumerator() | Sort-Object -Property @{ Expression = { $_.Value }; Descending = $true }, Name |
+            Select-Object -First $TopText | ForEach-Object { "$($_.Value)x`"$($_.Name)`"" })
+        return "n=$total  uniq=$($text.Count)  $($top -join '  ')  NAN/blank=$missing$extra"
+    }
+
+    if ($nums.Count -eq 0) { return "n=0  NAN/blank=$missing" }
+
+    $v = $nums.ToArray()
+    [Array]::Sort($v)
+    $pct = {
+        param($p)
+        $idx = [int][Math]::Ceiling($p / 100.0 * $v.Length) - 1
+        return $v[[Math]::Max(0, [Math]::Min($v.Length - 1, $idx))]
+    }
+    $sum = 0.0
+    foreach ($x in $v) { $sum += $x }
+    $f6 = { param($x) '{0:G6}' -f $x }
+
+    return ("n=$($v.Length)  min=$(& $f6 $v[0])  p5=$(& $f6 (& $pct 5))  mean=$(& $f6 ($sum / $v.Length))" +
+            "  p95=$(& $f6 (& $pct 95))  max=$(& $f6 $v[$v.Length - 1])  NAN/blank=$missing")
+}
+
 function Show-HeaderComparison {
     <#
         Displays a side-by-side, column-by-column comparison of two lines.
         Returns one of:
-          'Proceed' - merge this file
+          'Proceed' - merge this file as it stands
+          'Align'   - rewrite the secondary's columns into the primary's order
+                      first, then merge (offered only when -AlignOffer is set)
           'Decline' - skip this file and continue with the next one
           'ExitAll' - stop processing everything (remaining files and groups)
+
+        -AlignOffer adds the "Align & Merge" button (and makes it the Enter
+        default). -AlignBlockedReason greys that button out AND disables
+        Proceed Anyway, with Decline as the Enter default: merging as-is would
+        put values under the wrong names, which is the case Align exists to
+        prevent.
+
+        Row 1 is the TOA5 environment line. The grid labels each field with the
+        same names ViewPro uses (File Format, Station Name, Model, CPU Serial
+        Number, OS Version, Program Name, ProgSignature, Table Name).
     #>
     param(
         [string]$PrimaryHeader,
@@ -380,7 +767,9 @@ function Show-HeaderComparison {
         [string]$PrimaryName,
         [string]$SecondaryName,
         [int]$RowNumber,
-        [string]$ComparisonTitle = "Header Comparison"
+        [string]$ComparisonTitle = "Header Comparison",
+        [string]$AlignOffer,
+        [string]$AlignBlockedReason
     )
 
     $primaryFields = Split-CsvLine -Line $PrimaryHeader
@@ -413,8 +802,9 @@ function Show-HeaderComparison {
     $form = New-Object System.Windows.Forms.Form
     $form.Text = "$ComparisonTitle (Row $RowNumber)"
     $form.StartPosition = 'CenterScreen'
-    $form.Size = New-Object System.Drawing.Size(820, 600)
-    $form.MinimumSize = New-Object System.Drawing.Size(600, 440)
+    # Row 1 adds a Meaning column (ViewPro's names for the TOA5 environment line).
+    $form.Size = New-Object System.Drawing.Size($(if ($RowNumber -eq 1) { 940 } else { 820 }), 600)
+    $form.MinimumSize = New-Object System.Drawing.Size($(if ($RowNumber -eq 1) { 720 } else { 600 }), 440)
     $form.TopMost = $true
     $form.BackColor = $clrBg
     $form.Font = $fontUI
@@ -468,8 +858,23 @@ function Show-HeaderComparison {
     $lblFiles.ForeColor = $clrText
     $lblFiles.Text = "Primary:      $PrimaryName`nSecondary:  $SecondaryName"
 
+    # Fill goes in first, then the edge-docked labels - same z-order rule the
+    # form itself follows below, or the Fill control swallows their space.
     $banner.Controls.Add($lblFiles)
     $banner.Controls.Add($lblStatus)
+
+    # Say in the banner what the Align button will or will not do. A tooltip
+    # alone is a message nobody reads before clicking Proceed Anyway.
+    if ($AlignOffer -or $AlignBlockedReason) {
+        $banner.Height = 120
+        $lblAlign = New-Object System.Windows.Forms.Label
+        $lblAlign.Dock = 'Bottom'
+        $lblAlign.Height = 40
+        $lblAlign.Font = $fontUI
+        $lblAlign.ForeColor = if ($AlignOffer) { [System.Drawing.Color]::FromArgb(40, 90, 170) } else { $clrRed }
+        $lblAlign.Text = if ($AlignOffer) { "Align Columns & Merge:  $AlignOffer" } else { "Align Columns unavailable:  $AlignBlockedReason" }
+        $banner.Controls.Add($lblAlign)
+    }
 
     # Grid
     $grid = New-Object System.Windows.Forms.DataGridView
@@ -499,16 +904,35 @@ function Show-HeaderComparison {
     $grid.ColumnHeadersDefaultCellStyle.Font = $fontUIBold
     $grid.ColumnHeadersDefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
 
+    # ViewPro's names for TOA5 row 1, in CSV order. The fourth field is the
+    # logger serial (CPU Serial Number), not the station name in the file name.
+    $toa5Meanings = @(
+        'File Format',
+        'Station Name',
+        'Model',
+        'CPU Serial Number',
+        'OS Version',
+        'Program Name',
+        'ProgSignature',
+        'Table Name'
+    )
+    $showMeanings = ($RowNumber -eq 1)
+
     [void]$grid.Columns.Add("Col", "#")
+    if ($showMeanings) { [void]$grid.Columns.Add("Meaning", "Meaning") }
     [void]$grid.Columns.Add("Primary", "Primary")
     [void]$grid.Columns.Add("Secondary", "Secondary")
     [void]$grid.Columns.Add("Status", "Status")
-    $grid.Columns["Col"].FillWeight = 12
+    $grid.Columns["Col"].FillWeight = $(if ($showMeanings) { 8 } else { 12 })
     $grid.Columns["Col"].DefaultCellStyle.Alignment = 'MiddleCenter'
     $grid.Columns["Col"].DefaultCellStyle.ForeColor = $clrSubtle
+    if ($showMeanings) {
+        $grid.Columns["Meaning"].FillWeight = 28
+        $grid.Columns["Meaning"].DefaultCellStyle.ForeColor = $clrSubtle
+    }
     $grid.Columns["Primary"].DefaultCellStyle.Font = $fontMono
     $grid.Columns["Secondary"].DefaultCellStyle.Font = $fontMono
-    $grid.Columns["Status"].FillWeight = 26
+    $grid.Columns["Status"].FillWeight = $(if ($showMeanings) { 22 } else { 26 })
 
     for ($i = 0; $i -lt $maxCols; $i++) {
         $p = if ($i -lt $primaryFields.Count) { $primaryFields[$i] }   else { $null }
@@ -519,7 +943,15 @@ function Show-HeaderComparison {
         elseif ($p -eq $s) { $status = "Match" }
         else { $status = "Different" }
 
-        $rowIndex = $grid.Rows.Add(($i + 1), $(if ($null -eq $p) { "(none)" }else { $p }), $(if ($null -eq $s) { "(none)" }else { $s }), $status)
+        $pText = if ($null -eq $p) { "(none)" } else { $p }
+        $sText = if ($null -eq $s) { "(none)" } else { $s }
+        if ($showMeanings) {
+            $meaning = if ($i -lt $toa5Meanings.Count) { $toa5Meanings[$i] } else { '' }
+            $rowIndex = $grid.Rows.Add(($i + 1), $meaning, $pText, $sText, $status)
+        }
+        else {
+            $rowIndex = $grid.Rows.Add(($i + 1), $pText, $sText, $status)
+        }
         $row = $grid.Rows[$rowIndex]
 
         if ($status -ne "Match") {
@@ -545,6 +977,10 @@ function Show-HeaderComparison {
     $panel.Dock = 'Bottom'
     $panel.Height = 64
     $panel.FlowDirection = 'RightToLeft'
+    # Never wrap. The panel is 64px tall, so a button pushed onto a second row is
+    # not a smaller layout, it is a button the user cannot see or click - and the
+    # one that wraps is the last added, "Exit All".
+    $panel.WrapContents = $false
     $panel.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
     $panel.BackColor = [System.Drawing.Color]::FromArgb(243, 244, 247)
 
@@ -587,6 +1023,52 @@ function Show-HeaderComparison {
     $btnExitAll.Cursor = [System.Windows.Forms.Cursors]::Hand
 
     # RightToLeft flow: first added appears rightmost.
+    if ($AlignOffer -or $AlignBlockedReason) {
+        # A fourth button needs ~200px more than the three-button layout, and the
+        # row does not wrap (see $panel.WrapContents), so the window has to give
+        # it the room or Exit All falls off the right-hand edge.
+        $form.Size = New-Object System.Drawing.Size(1010, 620)
+        $form.MinimumSize = New-Object System.Drawing.Size(1010, 460)
+
+        $btnAlign = New-Object System.Windows.Forms.Button
+        $btnAlign.Size = New-Object System.Drawing.Size(210, 36)
+        $btnAlign.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+        $btnAlign.FlatStyle = 'Flat'
+        $btnAlign.FlatAppearance.BorderSize = 0
+        $btnAlign.Font = $fontUIBold
+
+        if ($AlignOffer) {
+            $btnAlign.Text = "Align Columns && Merge"
+            $btnAlign.DialogResult = [System.Windows.Forms.DialogResult]::Retry
+            $btnAlign.BackColor = [System.Drawing.Color]::FromArgb(40, 90, 170)
+            $btnAlign.ForeColor = [System.Drawing.Color]::White
+            $btnAlign.Cursor = [System.Windows.Forms.Cursors]::Hand
+            $tip = New-Object System.Windows.Forms.ToolTip
+            $tip.SetToolTip($btnAlign, $AlignOffer)
+            # Aligning is the right answer whenever it is on offer, so it is the
+            # button Enter presses - not "Proceed Anyway", which merges rows that
+            # the grid above has just shown do not line up.
+            $form.AcceptButton = $btnAlign
+        }
+        else {
+            $btnAlign.Text = "Align Columns - unavailable"
+            $btnAlign.Enabled = $false
+            $btnAlign.BackColor = [System.Drawing.Color]::FromArgb(226, 226, 230)
+            $btnAlign.ForeColor = $clrSubtle
+            $tip = New-Object System.Windows.Forms.ToolTip
+            $tip.SetToolTip($btnAlign, $AlignBlockedReason)
+            # Proceed Anyway would merge the secondary's fields under the
+            # primary's names without remapping. That is the silent-wrong-data
+            # case Align exists to prevent, so it is not offered either.
+            $btnProceed.Enabled = $false
+            $btnProceed.BackColor = [System.Drawing.Color]::FromArgb(226, 226, 230)
+            $btnProceed.ForeColor = $clrSubtle
+            $btnProceed.Cursor = [System.Windows.Forms.Cursors]::Default
+            $tip.SetToolTip($btnProceed, "Cannot merge as-is: columns would land under the wrong names. $AlignBlockedReason")
+            $form.AcceptButton = $btnDecline
+        }
+        $panel.Controls.Add($btnAlign)
+    }
     $panel.Controls.Add($btnProceed)
     $panel.Controls.Add($btnDecline)
     $panel.Controls.Add($btnExitAll)
@@ -596,7 +1078,9 @@ function Show-HeaderComparison {
     $form.Controls.Add($panel)
     $form.Controls.Add($banner)
     $form.Controls.Add($titleBar)
-    $form.AcceptButton = $btnProceed
+    # Align, when on offer, is already AcceptButton. When it is blocked, Decline
+    # is - Enter must not mean Proceed Anyway. Otherwise Proceed is the default.
+    if (-not $AlignOffer -and -not $AlignBlockedReason) { $form.AcceptButton = $btnProceed }
     $form.CancelButton = $btnDecline
 
     $result = $form.ShowDialog()
@@ -604,8 +1088,223 @@ function Show-HeaderComparison {
 
     switch ($result) {
         ([System.Windows.Forms.DialogResult]::Yes) { return 'Proceed' }
+        ([System.Windows.Forms.DialogResult]::Retry) { return 'Align' }
         ([System.Windows.Forms.DialogResult]::Abort) { return 'ExitAll' }
         default { return 'Decline' }   # No / Esc / window closed = skip this file only
+    }
+}
+
+function Get-ColumnStatsTable {
+    <#
+        Per-column distributions for the three row sets a re-order has to be
+        judged on: the primary before this merge, the secondary after alignment,
+        and the merged result. Computed once and used twice - the dialog the
+        user reads, and the merge log that outlives the dialog.
+    #>
+    param(
+        [Parameter(Mandatory)][string[]]$ColumnNames,
+        [Parameter(Mandatory)]$PrimaryRows,
+        [Parameter(Mandatory)]$AlignedRows,
+        [Parameter(Mandatory)]$MergedRows,
+        [string[]]$FilledColumns = @()
+    )
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    for ($i = 0; $i -lt $ColumnNames.Count; $i++) {
+        $rows.Add([pscustomobject]@{
+            Name      = $ColumnNames[$i]
+            Before    = Get-ColumnStats -Rows $PrimaryRows -Index $i
+            Secondary = if ($FilledColumns -contains $ColumnNames[$i]) { '(not in secondary - filled NAN)' }
+                        else { Get-ColumnStats -Rows $AlignedRows -Index $i }
+            After     = Get-ColumnStats -Rows $MergedRows -Index $i
+        })
+    }
+    return $rows.ToArray()
+}
+
+function Show-ColumnStatsComparison {
+    <#
+        The proof shown before a RE-ORDERED secondary is written. Nothing has
+        touched the disk at this point: the merge exists only in memory, so
+        Decline here costs nothing.
+
+        Per shared column, three distributions side by side - the primary on its
+        own, the secondary's rows after alignment, and the merged result. A map
+        that put values in the wrong column shows up immediately, because the
+        secondary column reads like a different measurement than the primary
+        column it sits beside (volts against degrees, a text column against a
+        numeric one) and the merged column is visibly polluted by it.
+
+        Returns 'Proceed' / 'Decline' / 'ExitAll', same vocabulary as the
+        header comparison.
+    #>
+    param(
+        [Parameter(Mandatory)][object[]]$StatRows,
+        [string]$PrimaryName,
+        [string]$SecondaryName,
+        [string[]]$FilledColumns = @(),
+        [string[]]$DroppedColumns = @()
+    )
+
+    $clrBg = [System.Drawing.Color]::FromArgb(250, 250, 252)
+    $clrText = [System.Drawing.Color]::FromArgb(32, 32, 32)
+    $clrSubtle = [System.Drawing.Color]::FromArgb(110, 110, 120)
+    $clrHeaderBg = [System.Drawing.Color]::FromArgb(45, 52, 64)
+    $clrGreen = [System.Drawing.Color]::FromArgb(34, 139, 87)
+    $clrRed = [System.Drawing.Color]::FromArgb(192, 57, 57)
+    $fontUI = New-Object System.Drawing.Font("Segoe UI", 9)
+    $fontUIBold = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $fontTitle = New-Object System.Drawing.Font("Segoe UI Semibold", 13, [System.Drawing.FontStyle]::Bold)
+    $fontMono = New-Object System.Drawing.Font("Consolas", 8.5)
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Column Re-order Check"
+    $form.StartPosition = 'CenterScreen'
+    $form.Size = New-Object System.Drawing.Size(1180, 720)
+    $form.MinimumSize = New-Object System.Drawing.Size(800, 500)
+    $form.TopMost = $true
+    $form.BackColor = $clrBg
+    $form.Font = $fontUI
+
+    $titleBar = New-Object System.Windows.Forms.Panel
+    $titleBar.Dock = 'Top'
+    $titleBar.Height = 58
+    $titleBar.BackColor = $clrHeaderBg
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "Columns were RE-ORDERED - check the numbers before writing"
+    $lblTitle.Font = $fontTitle
+    $lblTitle.ForeColor = [System.Drawing.Color]::White
+    $lblTitle.Dock = 'Fill'
+    $lblTitle.TextAlign = 'MiddleLeft'
+    $lblTitle.Padding = New-Object System.Windows.Forms.Padding(18, 0, 0, 0)
+    $titleBar.Controls.Add($lblTitle)
+
+    $banner = New-Object System.Windows.Forms.Panel
+    $banner.Dock = 'Top'
+    $banner.Height = 92
+    $banner.BackColor = [System.Drawing.Color]::FromArgb(235, 241, 250)
+    $banner.Padding = New-Object System.Windows.Forms.Padding(18, 10, 18, 10)
+    $lblInfo = New-Object System.Windows.Forms.Label
+    $lblInfo.Dock = 'Fill'
+    $lblInfo.Font = $fontUI
+    $lblInfo.ForeColor = $clrText
+    $extra = @()
+    if ($FilledColumns.Count -gt 0) { $extra += "$($FilledColumns.Count) column(s) filled with NAN: $($FilledColumns -join ', ')" }
+    if ($DroppedColumns.Count -gt 0) { $extra += "$($DroppedColumns.Count) column(s) dropped: $($DroppedColumns -join ', ')" }
+    $lblInfo.Text = ("Primary:      $PrimaryName`nSecondary:  $SecondaryName`n" +
+        "Nothing has been written yet. Each column below should read like the same measurement in all three." +
+        $(if ($extra.Count) { "`n" + ($extra -join '   |   ') } else { '' }))
+    $banner.Controls.Add($lblInfo)
+
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = 'Fill'
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.ReadOnly = $true
+    $grid.RowHeadersVisible = $false
+    $grid.SelectionMode = 'FullRowSelect'
+    $grid.BorderStyle = 'None'
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.EnableHeadersVisualStyles = $false
+    $grid.Font = $fontUI
+    $grid.ScrollBars = 'Both'
+    # Wrapped and row-sized rather than auto-widened. Six statistics per cell,
+    # three cells per column: sized to content, the "Merged (after)" column - the
+    # one the whole dialog exists to show - ends up off the right-hand edge, and
+    # a check nobody scrolls to is a check nobody makes.
+    $grid.AutoSizeColumnsMode = 'None'
+    $grid.AutoSizeRowsMode = 'AllCells'
+    $grid.DefaultCellStyle.WrapMode = 'True'
+    $grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(238, 240, 244)
+    $grid.ColumnHeadersDefaultCellStyle.Font = $fontUIBold
+    $grid.AlternatingRowsDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(247, 249, 251)
+
+    [void]$grid.Columns.Add("Col", "#")
+    [void]$grid.Columns.Add("Name", "Column")
+    [void]$grid.Columns.Add("Before", "Primary only (before)")
+    [void]$grid.Columns.Add("Sec", "Secondary, aligned")
+    [void]$grid.Columns.Add("After", "Merged (after)")
+    $grid.Columns["Col"].DefaultCellStyle.ForeColor = $clrSubtle
+    $grid.Columns["Col"].Width = 38
+    $grid.Columns["Name"].Width = 150
+    $grid.Columns["Name"].DefaultCellStyle.Font = $fontUIBold
+    foreach ($c in 'Before', 'Sec', 'After') {
+        $grid.Columns[$c].DefaultCellStyle.Font = $fontMono
+        $grid.Columns[$c].Width = 310
+    }
+
+    for ($i = 0; $i -lt $StatRows.Count; $i++) {
+        $s = $StatRows[$i]
+        $rowIndex = $grid.Rows.Add(($i + 1), $s.Name, $s.Before, $s.Secondary, $s.After)
+        if ($FilledColumns -contains $s.Name) {
+            $grid.Rows[$rowIndex].Cells["Sec"].Style.ForeColor = $clrSubtle
+        }
+    }
+
+    $gridHost = New-Object System.Windows.Forms.Panel
+    $gridHost.Dock = 'Fill'
+    $gridHost.Padding = New-Object System.Windows.Forms.Padding(12, 10, 12, 10)
+    $gridHost.BackColor = $clrBg
+    $gridHost.Controls.Add($grid)
+
+    $panel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $panel.Dock = 'Bottom'
+    $panel.Height = 64
+    $panel.FlowDirection = 'RightToLeft'
+    $panel.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
+    $panel.BackColor = [System.Drawing.Color]::FromArgb(243, 244, 247)
+
+    $btnOk = New-Object System.Windows.Forms.Button
+    $btnOk.Text = "Numbers look right - Merge"
+    $btnOk.Size = New-Object System.Drawing.Size(210, 36)
+    $btnOk.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+    $btnOk.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $btnOk.FlatStyle = 'Flat'
+    $btnOk.FlatAppearance.BorderSize = 0
+    $btnOk.BackColor = $clrGreen
+    $btnOk.ForeColor = [System.Drawing.Color]::White
+    $btnOk.Font = $fontUIBold
+    $btnOk.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    $btnNo = New-Object System.Windows.Forms.Button
+    $btnNo.Text = "Decline (Skip File)"
+    $btnNo.Size = New-Object System.Drawing.Size(160, 36)
+    $btnNo.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+    $btnNo.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $btnNo.FlatStyle = 'Flat'
+    $btnNo.BackColor = [System.Drawing.Color]::White
+    $btnNo.ForeColor = $clrText
+    $btnNo.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    $btnExit = New-Object System.Windows.Forms.Button
+    $btnExit.Text = "Exit All (Stop Everything)"
+    $btnExit.Size = New-Object System.Drawing.Size(180, 36)
+    $btnExit.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+    $btnExit.DialogResult = [System.Windows.Forms.DialogResult]::Abort
+    $btnExit.FlatStyle = 'Flat'
+    $btnExit.BackColor = [System.Drawing.Color]::FromArgb(253, 240, 240)
+    $btnExit.ForeColor = $clrRed
+    $btnExit.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    $panel.Controls.Add($btnOk)
+    $panel.Controls.Add($btnNo)
+    $panel.Controls.Add($btnExit)
+
+    $form.Controls.Add($gridHost)
+    $form.Controls.Add($panel)
+    $form.Controls.Add($banner)
+    $form.Controls.Add($titleBar)
+    # Decline is the default: a re-order is meant to be read, not Enter-ed past.
+    $form.AcceptButton = $btnNo
+    $form.CancelButton = $btnNo
+
+    $result = $form.ShowDialog()
+    $form.Dispose()
+
+    switch ($result) {
+        ([System.Windows.Forms.DialogResult]::Yes) { return 'Proceed' }
+        ([System.Windows.Forms.DialogResult]::Abort) { return 'ExitAll' }
+        default { return 'Decline' }
     }
 }
 
@@ -705,6 +1404,249 @@ function Show-Notification {
     ) | Out-Null
 }
 
+function Confirm-RecencyOverride {
+    <#
+        The "are you sure?" for a primary that is not the newer file.
+
+        Built as a form rather than a MessageBox for two reasons. It reads like
+        the rest of the tool - same dark title bar, same status banner, same grid
+        - and a grid can put the two checks side by side and mark the one that
+        failed, which a wall of MessageBox prose cannot. The user's question here
+        is "which of the two is wrong, and by how much", and that is a table.
+
+        Defaults to No, and No is also what Esc and the close box give. Someone
+        clicking through dialogs should not be able to merge backwards by holding
+        Enter.
+
+        Returns $true only for an explicit Yes.
+    #>
+    param(
+        [string]$PrimaryName,
+        [string]$SecondaryName,
+        [Parameter(Mandatory)]$Recency
+    )
+
+    $clrBg = [System.Drawing.Color]::FromArgb(250, 250, 252)
+    $clrText = [System.Drawing.Color]::FromArgb(32, 32, 32)
+    $clrSubtle = [System.Drawing.Color]::FromArgb(110, 110, 120)
+    $clrHeaderBg = [System.Drawing.Color]::FromArgb(45, 52, 64)
+    $clrGreen = [System.Drawing.Color]::FromArgb(34, 139, 87)
+    $clrRed = [System.Drawing.Color]::FromArgb(192, 57, 57)
+    $clrAmber = [System.Drawing.Color]::FromArgb(176, 106, 20)
+    $clrDiff = [System.Drawing.Color]::FromArgb(253, 235, 236)
+    $fontUI = New-Object System.Drawing.Font("Segoe UI", 9)
+    $fontUIBold = New-Object System.Drawing.Font("Segoe UI", 9, [System.Drawing.FontStyle]::Bold)
+    $fontTitle = New-Object System.Drawing.Font("Segoe UI Semibold", 13, [System.Drawing.FontStyle]::Bold)
+    $fontBanner = New-Object System.Drawing.Font("Segoe UI Semibold", 10, [System.Drawing.FontStyle]::Bold)
+    $fontMono = New-Object System.Drawing.Font("Consolas", 9)
+
+    $form = New-Object System.Windows.Forms.Form
+    $form.Text = "Are you sure?  -  the primary is not the newer file"
+    $form.StartPosition = 'CenterScreen'
+    $form.Size = New-Object System.Drawing.Size(860, 560)
+    $form.MinimumSize = New-Object System.Drawing.Size(700, 470)
+    $form.TopMost = $true
+    $form.BackColor = $clrBg
+    $form.Font = $fontUI
+
+    # --- Title bar (dark) ---
+    $titleBar = New-Object System.Windows.Forms.Panel
+    $titleBar.Dock = 'Top'
+    $titleBar.Height = 58
+    $titleBar.BackColor = $clrHeaderBg
+    $lblTitle = New-Object System.Windows.Forms.Label
+    $lblTitle.Text = "Are you sure?"
+    $lblTitle.Font = $fontTitle
+    $lblTitle.ForeColor = [System.Drawing.Color]::White
+    $lblTitle.Dock = 'Fill'
+    $lblTitle.TextAlign = 'MiddleLeft'
+    $lblTitle.Padding = New-Object System.Windows.Forms.Padding(18, 0, 0, 0)
+    $lblTag = New-Object System.Windows.Forms.Label
+    $lblTag.Text = "Recency check"
+    $lblTag.Font = $fontUIBold
+    $lblTag.ForeColor = [System.Drawing.Color]::FromArgb(200, 210, 225)
+    $lblTag.Dock = 'Right'
+    $lblTag.Width = 140
+    $lblTag.TextAlign = 'MiddleRight'
+    $lblTag.Padding = New-Object System.Windows.Forms.Padding(0, 0, 18, 0)
+    $titleBar.Controls.Add($lblTitle)
+    $titleBar.Controls.Add($lblTag)
+
+    # --- Status banner (red) ---
+    $banner = New-Object System.Windows.Forms.Panel
+    $banner.Dock = 'Top'
+    $banner.Height = 84
+    $banner.BackColor = [System.Drawing.Color]::FromArgb(253, 237, 237)
+    $banner.Padding = New-Object System.Windows.Forms.Padding(18, 10, 18, 10)
+    $lblStatus = New-Object System.Windows.Forms.Label
+    $lblStatus.Dock = 'Top'
+    $lblStatus.Height = 24
+    $lblStatus.Font = $fontBanner
+    $lblStatus.ForeColor = $clrRed
+    $lblStatus.Text = "The primary is NOT newer than the file being merged into it."
+    $lblFiles = New-Object System.Windows.Forms.Label
+    $lblFiles.Dock = 'Fill'
+    $lblFiles.Font = $fontUI
+    $lblFiles.ForeColor = $clrText
+    $lblFiles.Text = "Primary:      $PrimaryName`nSecondary:  $SecondaryName"
+    $banner.Controls.Add($lblFiles)
+    $banner.Controls.Add($lblStatus)
+
+    # --- The two checks, side by side ---
+    $grid = New-Object System.Windows.Forms.DataGridView
+    $grid.Dock = 'Fill'
+    $grid.AllowUserToAddRows = $false
+    $grid.AllowUserToDeleteRows = $false
+    $grid.AllowUserToResizeRows = $false
+    $grid.ReadOnly = $true
+    $grid.RowHeadersVisible = $false
+    $grid.AutoSizeColumnsMode = 'Fill'
+    $grid.SelectionMode = 'FullRowSelect'
+    $grid.BorderStyle = 'None'
+    $grid.CellBorderStyle = 'SingleHorizontal'
+    $grid.BackgroundColor = [System.Drawing.Color]::White
+    $grid.EnableHeadersVisualStyles = $false
+    $grid.GridColor = [System.Drawing.Color]::FromArgb(232, 234, 238)
+    $grid.Font = $fontUI
+    $grid.RowTemplate.Height = 30
+    $grid.ColumnHeadersHeight = 34
+    $grid.ColumnHeadersBorderStyle = 'None'
+    $grid.ColumnHeadersDefaultCellStyle.BackColor = [System.Drawing.Color]::FromArgb(238, 240, 244)
+    $grid.ColumnHeadersDefaultCellStyle.Font = $fontUIBold
+    $grid.DefaultCellStyle.Padding = New-Object System.Windows.Forms.Padding(6, 0, 6, 0)
+    # Selection is neutralised. There are exactly two rows and nothing to select;
+    # a highlighted first row would paint over the red that marks the failing
+    # check, which is the only thing on screen the user needs to see.
+    $grid.DefaultCellStyle.SelectionBackColor = [System.Drawing.Color]::White
+    $grid.DefaultCellStyle.SelectionForeColor = $clrText
+    [void]$grid.Columns.Add("Check", "Check")
+    [void]$grid.Columns.Add("Primary", "Primary")
+    [void]$grid.Columns.Add("Secondary", "Secondary")
+    [void]$grid.Columns.Add("Status", "Status")
+    # The two value columns hold a fixed-width timestamp and nothing else, so the
+    # words get the room: an elided "File modifie..." against "FAILED - ..." is a
+    # dialog that has stopped saying anything.
+    $grid.Columns["Check"].FillWeight = 26
+    $grid.Columns["Primary"].FillWeight = 22
+    $grid.Columns["Secondary"].FillWeight = 22
+    $grid.Columns["Status"].FillWeight = 30
+    $grid.Columns["Primary"].DefaultCellStyle.Font = $fontMono
+    $grid.Columns["Secondary"].DefaultCellStyle.Font = $fontMono
+
+    $fmt = 'yyyy-MM-dd HH:mm:ss'
+    $addCheck = {
+        param($label, $primary, $secondary, $ok, $failText)
+        $status = if ($ok) { "OK - primary newer" } else { $failText }
+        $i = $grid.Rows.Add($label, $primary, $secondary, $status)
+        $row = $grid.Rows[$i]
+        $row.Cells["Status"].Style.Font = $fontUIBold
+        # Selection colours are set alongside every normal colour. The grid
+        # always has a current row, and without this the red on whichever row
+        # happens to be selected - row 1, always - is painted over by it.
+        if ($ok) {
+            $row.Cells["Status"].Style.ForeColor = $clrGreen
+            $row.Cells["Status"].Style.SelectionForeColor = $clrGreen
+        }
+        else {
+            $row.Cells["Status"].Style.ForeColor = $clrRed
+            $row.Cells["Status"].Style.SelectionForeColor = $clrRed
+            foreach ($c in 'Primary', 'Secondary') {
+                $row.Cells[$c].Style.BackColor = $clrDiff
+                $row.Cells[$c].Style.SelectionBackColor = $clrDiff
+            }
+        }
+    }
+    & $addCheck "File modified time" `
+        $Recency.PrimaryModified.ToString($fmt) $Recency.SecondaryModified.ToString($fmt) `
+        $Recency.MtimeOk "FAILED - secondary is not older"
+    & $addCheck "Last timestamp in file" `
+        $Recency.PrimaryLastTs $Recency.SecondaryLastTs `
+        $Recency.TsOk $(if ($Recency.TsComparable) { "FAILED - secondary is not older" } else { "CANNOT COMPARE - not YYYY-MM-DD" })
+
+    $gridHost = New-Object System.Windows.Forms.Panel
+    $gridHost.Dock = 'Fill'
+    $gridHost.Padding = New-Object System.Windows.Forms.Padding(12, 10, 12, 10)
+    $gridHost.BackColor = $clrBg
+    $gridHost.Controls.Add($grid)
+
+    # --- What it probably means ---
+    $explain = New-Object System.Windows.Forms.Panel
+    $explain.Dock = 'Bottom'
+    $explain.Height = 132
+    $explain.BackColor = $clrBg
+    $explain.Padding = New-Object System.Windows.Forms.Padding(18, 6, 18, 12)
+    $lblWhy = New-Object System.Windows.Forms.Label
+    $lblWhy.Dock = 'Fill'
+    $lblWhy.Font = $fontUI
+    $lblWhy.ForeColor = $clrSubtle
+    $lblWhy.Text = (
+        "The primary is expected to be newer on BOTH counts: it is the file automatic collection keeps " +
+        "appending to, so it holds the latest reading and was written most recently.`n`n" +
+        "A failure usually means the two files are the wrong way round - the newer data is in the " +
+        "secondary. Merging it into the primary would leave the combined result in a file nothing is " +
+        "collecting into, where the next collection will not find it.`n`n" +
+        "Merging anyway is recorded in the merge log. Column alignment stays unavailable either way."
+    )
+    $explain.Controls.Add($lblWhy)
+
+    # --- Buttons ---
+    $panel = New-Object System.Windows.Forms.FlowLayoutPanel
+    $panel.Dock = 'Bottom'
+    $panel.Height = 64
+    $panel.FlowDirection = 'RightToLeft'
+    $panel.WrapContents = $false
+    $panel.Padding = New-Object System.Windows.Forms.Padding(16, 12, 16, 12)
+    $panel.BackColor = [System.Drawing.Color]::FromArgb(243, 244, 247)
+
+    # The safe answer is the prominent one on the right, and the risky answer
+    # wears the warning colours. This is the one dialog in the tool where the
+    # rightmost button is NOT "carry on" - deliberately, because reflex is the
+    # thing it exists to interrupt.
+    $btnNo = New-Object System.Windows.Forms.Button
+    $btnNo.Text = "No - Skip This File"
+    $btnNo.Size = New-Object System.Drawing.Size(180, 36)
+    $btnNo.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+    $btnNo.DialogResult = [System.Windows.Forms.DialogResult]::No
+    $btnNo.FlatStyle = 'Flat'
+    $btnNo.FlatAppearance.BorderSize = 0
+    $btnNo.BackColor = $clrGreen
+    $btnNo.ForeColor = [System.Drawing.Color]::White
+    $btnNo.Font = $fontUIBold
+    $btnNo.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    $btnYes = New-Object System.Windows.Forms.Button
+    $btnYes.Text = "Yes - Merge Anyway"
+    $btnYes.Size = New-Object System.Drawing.Size(180, 36)
+    $btnYes.Margin = New-Object System.Windows.Forms.Padding(8, 0, 8, 0)
+    $btnYes.DialogResult = [System.Windows.Forms.DialogResult]::Yes
+    $btnYes.FlatStyle = 'Flat'
+    $btnYes.FlatAppearance.BorderSize = 1
+    $btnYes.FlatAppearance.BorderColor = [System.Drawing.Color]::FromArgb(224, 188, 130)
+    $btnYes.BackColor = [System.Drawing.Color]::FromArgb(255, 248, 232)
+    $btnYes.ForeColor = $clrAmber
+    $btnYes.Font = $fontUI
+    $btnYes.Cursor = [System.Windows.Forms.Cursors]::Hand
+
+    $panel.Controls.Add($btnNo)
+    $panel.Controls.Add($btnYes)
+
+    # Fill first, then the docked panels - see Show-HeaderComparison. Among
+    # controls sharing an edge the LAST added sits closest to it, so the buttons
+    # go in after the explanation or they end up above it, with the explanation
+    # running off the bottom of the window.
+    $form.Controls.Add($gridHost)
+    $form.Controls.Add($explain)
+    $form.Controls.Add($panel)
+    $form.Controls.Add($banner)
+    $form.Controls.Add($titleBar)
+    $form.AcceptButton = $btnNo
+    $form.CancelButton = $btnNo
+
+    $result = $form.ShowDialog()
+    $form.Dispose()
+    return ($result -eq [System.Windows.Forms.DialogResult]::Yes)
+}
+
 function Get-Toa5EnvironmentFields {
     <#
         Returns the parsed row-1 (TOA5 environment line) fields of a data file, or
@@ -742,8 +1684,9 @@ function Get-DuplicateGroups {
            .orig, .copy.
 
         2) SAME LOGGER, SAME TABLE (by TOA5 row 1) - data files whose row 1 gives
-           the same SERIAL and the same TABLE are one group, whatever they are
-           named:
+           the same MODEL, the same SERIAL and the same TABLE are one group,
+           whatever they are named. Model is required because two different
+           logger types can share a serial:
               18421_SAA_SAA1_DATA_2026-09-08.dat  ->  18421_SAA1_DATA.dat
            The dated downloads merge into the collected file. See
            Add-Toa5SerialTableGroups for how the primary is chosen and when a
@@ -757,8 +1700,11 @@ function Get-DuplicateGroups {
     param([string]$Folder)
 
     $dataExt = 'dat|csv|txt'
-    # A suffix appended after the data extension that marks a backup/version.
-    $suffixPattern = '^\.(bak|backup\d*|\d+|old|orig|copy)$'
+    # One or more suffixes appended after the data extension, each marking a
+    # backup/version. Repeated on purpose: LoggerNet stacks them, so a folder
+    # holds Foo.dat.backup, Foo.dat.1.backup and Foo.dat.2.backup side by side.
+    # A single-segment pattern matched only the first of those three.
+    $suffixPattern = '^(\.(bak|backup\d*|\d+|old|orig|copy))+$'
 
     # Top-level files only - no -Recurse, so subfolders (Backup, scd,
     # superseded, and everything else) are never scanned.
@@ -794,7 +1740,7 @@ function Get-DuplicateGroups {
         }
     }
 
-    # Second pass: same serial + same table per TOA5 row 1.
+    # Second pass: same model + serial + table per TOA5 row 1.
     Add-Toa5SerialTableGroups -AllFiles $allFiles -Groups $groups -DataExt $dataExt
 
     # Only return groups that actually have a primary AND at least one duplicate.
@@ -803,17 +1749,19 @@ function Get-DuplicateGroups {
 
 function Add-Toa5SerialTableGroups {
     <#
-        Adds re-collected / re-downloaded copies of a logger table to the merge
-        groups, matched ONLY on the two pieces of hard evidence the datalogger
+        Adds local manual downloads and remote manual collections of a logger table to the merge
+        groups, matched ONLY on the three pieces of hard evidence the datalogger
         itself wrote into TOA5 row 1:
 
             "TOA5","TM_MCL-02","CR6","13910","CR6.Std.14.01","prog.cr6","31248","Status"
-             0      1 station    2     3 SERIAL 4             5          6       7 TABLE
+             0      1 station    2 MODEL  3 SERIAL 4          5          6       7 TABLE
 
-        Two files belong to the same group when row 1 gives them the SAME SERIAL
-        and the SAME TABLE (case-insensitive) - and they share an extension, so a
-        merge never changes what kind of file the folder holds. The file NAME is
-        not consulted for matching at all, so every naming convention works:
+        Two files belong to the same group when row 1 gives them the SAME MODEL,
+        the SAME SERIAL and the SAME TABLE (case-insensitive) - and they share
+        an extension, so a merge never changes what kind of file the folder
+        holds. Model is in the key because two different logger types can share
+        a serial. The file NAME is not consulted for matching at all, so every
+        naming convention works:
 
             18421_SAA_SAA1_DATA_2026-09-08.dat  ->  18421_SAA1_DATA.dat
             13910_Status_2026-07-23T15-44.dat   ->  TM_MCL-02_Status.dat
@@ -822,8 +1770,8 @@ function Add-Toa5SerialTableGroups {
         WHICH FILE IS THE PRIMARY
         The primary must be the file the logger software keeps appending to -
         merging the other way round leaves the newly merged rows in a file
-        nothing collects into. Serial and table cannot tell those apart (they are
-        identical by definition here), so exactly one name-shaped rule decides
+        nothing collects into. Model, serial and table cannot tell those apart
+        (they are identical by definition here), so exactly one name-shaped rule decides
         the ROLE, never the match: a file whose name ends in a download date
         stamp (_YYYY-MM-DD, optionally with a time) is a download, and anything
         else is a collected file.
@@ -835,7 +1783,7 @@ function Add-Toa5SerialTableGroups {
           * dated downloads only, no collected file -> reported and skipped;
             which download should become the archive is the user's call.
 
-        Files with no readable TOA5 row 1 carry neither serial nor table, so they
+        Files with no readable TOA5 row 1 carry no model, serial or table, so they
         take no part in this pass (backup-suffix matching still covers them).
 
         $Groups is mutated in place (hashtable keyed by lowercase primary name).
@@ -847,7 +1795,8 @@ function Add-Toa5SerialTableGroups {
     )
 
     # A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
-    # and the underscore / dotted-time variants LoggerNet and CardConvert produce.
+    # and the underscore / dotted-time variants LoggerNet produces for automatic
+    # collection, local manual downloads and remote manual collections.
     $stampSuffix = '_(?<stamp>\d{4}-\d{2}-\d{2}(?:[T_]\d{2}[-.]\d{2}(?:[-.]\d{2})?)?)$'
 
     # Every top-level data file that actually carries a TOA5 row 1. Row 1 is read
@@ -863,14 +1812,18 @@ function Add-Toa5SerialTableGroups {
 
         $fields = Get-Toa5EnvironmentFields -FilePath $f.FullName
         if (-not $fields) { continue }
+        $model = $fields[2].Trim()
         $serial = $fields[3].Trim()
         $table = $fields[7].Trim()
-        if ([string]::IsNullOrWhiteSpace($serial) -or [string]::IsNullOrWhiteSpace($table)) { continue }
+        if ([string]::IsNullOrWhiteSpace($model) -or
+            [string]::IsNullOrWhiteSpace($serial) -or
+            [string]::IsNullOrWhiteSpace($table)) { continue }
 
         $stamp = if ($base -match $stampSuffix) { $Matches['stamp'] } else { $null }
 
         $members.Add([pscustomobject]@{
             File   = $f
+            Model  = $model
             Serial = $serial
             Table  = $table
             Ext    = $ext
@@ -879,10 +1832,10 @@ function Add-Toa5SerialTableGroups {
     }
     if ($members.Count -lt 2) { return }
 
-    # Group on serial + table + extension, and nothing else.
+    # Group on model + serial + table + extension, and nothing else.
     $sets = @{}
     foreach ($m in $members) {
-        $key = '{0}|{1}|{2}' -f $m.Serial.ToLowerInvariant(), $m.Table.ToLowerInvariant(), $m.Ext
+        $key = '{0}|{1}|{2}|{3}' -f $m.Model.ToLowerInvariant(), $m.Serial.ToLowerInvariant(), $m.Table.ToLowerInvariant(), $m.Ext
         if (-not $sets.ContainsKey($key)) {
             $sets[$key] = [System.Collections.Generic.List[object]]::new()
         }
@@ -893,7 +1846,7 @@ function Add-Toa5SerialTableGroups {
         $set = @($sets[$key])
         if ($set.Count -lt 2) { continue }
 
-        $label = "serial $($set[0].Serial), table '$($set[0].Table)' (.$($set[0].Ext))"
+        $label = "model $($set[0].Model), serial $($set[0].Serial), table '$($set[0].Table)' (.$($set[0].Ext))"
         $collected = @($set | Where-Object { -not $_.Stamp })
         # Oldest download first so merges happen in chronological order.
         $downloads = @(
@@ -1023,6 +1976,13 @@ function Invoke-CombineForPrimary {
     $primaryName = [System.IO.Path]::GetFileName($PrimaryPath)
     Write-Host "`nPrimary: $primaryName  ($($currentData.Count) unique data rows)" -ForegroundColor Cyan
 
+    # Recency is measured ONCE, here, against the primary as it was found.
+    # Re-reading it per secondary would be wrong: the first merge rewrites the
+    # primary, so its modified time becomes "just now" and every later secondary
+    # would sail through a check that has stopped meaning anything.
+    $primaryModified = (Get-Item -LiteralPath $PrimaryPath).LastWriteTime
+    $primaryLastTs = Get-LastDataTimestamp -Lines $linesPrimary -DataStartIndex $dataStartIndex
+
     $log = [System.Collections.Generic.List[string]]::new()
     $log.Add("Combine DAT Files - merge log")
     $log.Add("Generated:      $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')")
@@ -1114,10 +2074,46 @@ function Invoke-CombineForPrimary {
             }
             $sFields = (Split-CsvLine -Line $data2[0]).Count
             if ($sFields -ne $headerFieldCount) {
-                $msg = "'$secondaryName' first data row has $sFields field(s) but the header names $headerFieldCount. Its rows will not line up with the primary's."
+                $msg = "'$secondaryName' first data row has $sFields field(s) but the header names $headerFieldCount. Its rows will not line up with the primary's - 'Align Columns & Merge' is the fix if the column names match."
                 Write-Warning $msg
                 $result.Warnings.Add($msg)
             }
+        }
+
+        # --- Is the primary actually the newer file? ---
+        # Both halves must say yes. When they do not, this is very likely a
+        # merge the wrong way round - see Test-PrimaryIsNewer.
+        $secondaryModified = (Get-Item -LiteralPath $secondaryPath).LastWriteTime
+        $secondaryLastTs = Get-LastDataTimestamp -Lines $secondaryLines -DataStartIndex $dataStart2
+        $recency = Test-PrimaryIsNewer `
+            -PrimaryModified   $primaryModified `
+            -SecondaryModified $secondaryModified `
+            -PrimaryLastTs     $primaryLastTs `
+            -SecondaryLastTs   $secondaryLastTs
+
+        # --- Could the secondary's columns be shifted into the primary's order? ---
+        $align = Get-ColumnAlignment -PrimaryHeaderRow $primaryRow2 -SecondaryHeaderRow $secondaryRow2
+        # Aligning has NO "are you sure". Rewriting every field of every row is
+        # only ever safe in the direction old-archive -> live-file, and the
+        # recency check is the only evidence of which direction that is. No
+        # evidence, no alignment; the file is skipped and the scan moves on.
+        $alignOffer = $null
+        $alignBlocked = $null
+        if ($align.NoOp) {
+            # Headers already agree column for column - nothing to shift.
+        }
+        elseif (-not $recency.Ok) {
+            $alignBlocked = "the primary is not newer than the secondary ($($recency.Reason)). Column shifting is not offered, and cannot be overridden."
+        }
+        elseif (-not $align.Ok) {
+            $alignBlocked = $align.Reason
+        }
+        else {
+            $bits = @()
+            if ($align.Reordered) { $bits += "re-order $($align.Map.Count) column(s)" }
+            if ($align.Filled.Count -gt 0) { $bits += "add $($align.Filled.Count) column(s) as NAN ($($align.Filled -join ', '))" }
+            if ($align.Dropped.Count -gt 0) { $bits += "drop $($align.Dropped.Count) column(s) ($($align.Dropped -join ', '))" }
+            $alignOffer = ($bits -join '; ') + '.'
         }
 
         # A dry run decides nothing and shows nothing: the two comparisons the
@@ -1126,10 +2122,25 @@ function Invoke-CombineForPrimary {
             $row2Same = ($primaryRow2 -eq $secondaryRow2)
             $row1Same = ($originalHeader -eq $header2)
 
+            if (-not $recency.Ok) {
+                Write-Host "  RECENCY CHECK FAILED: $($recency.Reason)" -ForegroundColor Yellow
+                Write-Host "    $($recency.Summary -replace "`n", "`n    ")" -ForegroundColor DarkGray
+                Write-Host "    A real run would ask 'are you sure?' before merging this file." -ForegroundColor DarkGray
+                $log.Add("  RECENCY  $secondaryPath  -  $($recency.Reason)")
+                $result.Warnings.Add("'$secondaryName': $($recency.Reason)")
+            }
+
             if (-not $row2Same) {
                 Write-Host "  WOULD ASK: header row (row 2) differs - a real run opens the comparison dialog here." -ForegroundColor Yellow
+                if ($alignOffer) {
+                    Write-Host "    'Align Columns & Merge' would be offered: $alignOffer" -ForegroundColor Cyan
+                    $log.Add("  WOULD ASK  $secondaryPath  -  row 2 differs; align available: $alignOffer")
+                }
+                else {
+                    Write-Host "    'Align Columns & Merge' would be UNAVAILABLE: $alignBlocked" -ForegroundColor DarkGray
+                    $log.Add("  WOULD ASK  $secondaryPath  -  row 2 differs; align unavailable: $alignBlocked")
+                }
                 Write-Host "  Not counted below, because the answer would be yours." -ForegroundColor DarkGray
-                $log.Add("  WOULD ASK  $secondaryPath  -  row 2 differs")
                 continue
             }
 
@@ -1149,6 +2160,28 @@ function Invoke-CombineForPrimary {
             continue
         }
 
+        # STEP 0: the primary must be the newer file, on both counts.
+        # Asked before the header dialogs rather than after them, because it is a
+        # question about the whole merge: if the answer is no, the two header
+        # comparisons were never worth reading.
+        if (-not $recency.Ok) {
+            $msg = "'$secondaryName' is not older than the primary - $($recency.Reason)"
+            Write-Warning $msg
+            $sure = Confirm-RecencyOverride `
+                -PrimaryName   $primaryName `
+                -SecondaryName $secondaryName `
+                -Recency       $recency
+            if (-not $sure) {
+                Write-Host "Skipping $secondaryName (declined at the recency check)" -ForegroundColor Yellow
+                $log.Add("  DECLINED $secondaryPath  -  recency check: $($recency.Reason)")
+                continue
+            }
+            $result.Warnings.Add("$msg - merged anyway on confirmation.")
+            $log.Add("  RECENCY  $secondaryPath  -  $($recency.Reason) - user confirmed")
+        }
+
+        $aligning = $false
+
         # STEP 1: Compare the header row (row 2).
         if ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
             Write-Host "Header row (row 2) MATCHES - auto-proceeding to file-info comparison." -ForegroundColor Green
@@ -1164,7 +2197,9 @@ function Invoke-CombineForPrimary {
                 -PrimaryName     $primaryName `
                 -SecondaryName   $secondaryName `
                 -RowNumber       2 `
-                -ComparisonTitle "Step 1 of 2: Header Row Comparison"
+                -ComparisonTitle "Step 1 of 2: Header Row Comparison" `
+                -AlignOffer         $alignOffer `
+                -AlignBlockedReason $alignBlocked
         }
 
         if ($row2Choice -eq 'ExitAll') {
@@ -1172,8 +2207,17 @@ function Invoke-CombineForPrimary {
             $aborted = $true
             break
         }
-        if ($row2Choice -ne 'Proceed') {
+        if ($row2Choice -eq 'Align') { $aligning = $true }
+        elseif ($row2Choice -ne 'Proceed') {
             Write-Host "Skipping $secondaryName (declined at header row comparison)" -ForegroundColor Yellow
+            continue
+        }
+        elseif ($alignBlocked) {
+            # Headers differ and alignment is unavailable. Proceeding would put
+            # fields under the wrong names. Same outcome as Decline - the dialog
+            # also disables Proceed in this case, so this is the backstop.
+            Write-Host "Skipping $secondaryName (alignment unavailable: $alignBlocked)" -ForegroundColor Yellow
+            $log.Add("  SKIPPED  $secondaryPath  -  alignment unavailable: $alignBlocked")
             continue
         }
 
@@ -1198,12 +2242,87 @@ function Invoke-CombineForPrimary {
 
         Write-Host "Both comparisons approved; merging data." -ForegroundColor Green
 
-        # Merge data
+        # STEP 3 (only when asked for): shift the secondary's columns into the
+        # primary's order. Row 2 of the secondary said what each of its fields
+        # means; from here on the rows carry the primary's column order and
+        # nothing downstream - de-duplication, sorting, the written file - needs
+        # to know this file ever had a different shape.
+        $mergeRows = $data2
+        $alignNote = $null
+        if ($aligning) {
+            $aligned = [System.Collections.Generic.List[string]]::new($data2.Count)
+            foreach ($line in $data2) {
+                if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                $aligned.Add((ConvertTo-AlignedRow -Line $line -Map $align.Map))
+            }
+            $mergeRows = $aligned.ToArray()
+
+            $bits = @()
+            if ($align.Reordered) { $bits += "columns re-ordered" }
+            if ($align.Filled.Count -gt 0) { $bits += "filled with NAN: $($align.Filled -join ', ')" }
+            if ($align.Dropped.Count -gt 0) { $bits += "DROPPED (not merged): $($align.Dropped -join ', ')" }
+            $alignNote = "aligned to primary columns - " + ($bits -join '; ')
+            Write-Host "  $alignNote" -ForegroundColor Cyan
+            if ($align.Dropped.Count -gt 0) {
+                $msg = "'$secondaryName': column(s) $($align.Dropped -join ', ') exist in the secondary but not the primary and were NOT merged. The whole secondary is filed under Backup\RemovedColumns-NotMerged so those values are still recoverable."
+                Write-Warning $msg
+                $result.Warnings.Add($msg)
+            }
+        }
+
+        # Merge data. The added rows are tracked individually so a re-order that
+        # the statistics dialog then rejects can be taken back out exactly -
+        # rows that were already in the primary must not be removed with them.
         $rowsBefore = $currentData.Count
-        foreach ($line in $data2) {
-            if (-not [string]::IsNullOrWhiteSpace($line)) { [void]$currentData.Add($line) }
+        $beforeRows = if ($aligning -and $align.Reordered) { @($currentData) } else { $null }
+        $addedRows = if ($aligning -and $align.Reordered) { [System.Collections.Generic.List[string]]::new() } else { $null }
+        foreach ($line in $mergeRows) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            if ($currentData.Add($line) -and $addedRows) { $addedRows.Add($line) }
         }
         Show-SlowHintIfNeeded -WatchPath "$PrimaryPath.combining.tmp"
+
+        # STEP 4: a re-order moves every value in the file, and a wrong map is
+        # silent - the rows still parse, they are just lies. Show what the
+        # numbers did before anything is written, and let it be refused.
+        if ($aligning -and $align.Reordered) {
+            Write-Host "  Columns were re-ordered - building the before/after column statistics..." -ForegroundColor Cyan
+            $statRows = Get-ColumnStatsTable `
+                -ColumnNames   @(Split-CsvLine -Line $primaryRow2 | ForEach-Object { $_.Trim() }) `
+                -PrimaryRows   $beforeRows `
+                -AlignedRows   $mergeRows `
+                -MergedRows    $currentData `
+                -FilledColumns $align.Filled
+
+            $statsChoice = Show-ColumnStatsComparison `
+                -StatRows        $statRows `
+                -PrimaryName     $primaryName `
+                -SecondaryName   $secondaryName `
+                -FilledColumns   $align.Filled `
+                -DroppedColumns  $align.Dropped
+
+            if ($statsChoice -ne 'Proceed') {
+                foreach ($r in $addedRows) { [void]$currentData.Remove($r) }
+                if ($statsChoice -eq 'ExitAll') {
+                    Write-Host "Exit All requested at the column re-order check. Stopping." -ForegroundColor Yellow
+                    $log.Add("  DECLINED $secondaryPath  -  column re-order check, then Exit All")
+                    $aborted = $true
+                    break
+                }
+                Write-Host "Skipping $secondaryName (declined at the column re-order check)" -ForegroundColor Yellow
+                $log.Add("  DECLINED $secondaryPath  -  column re-order statistics rejected")
+                continue
+            }
+            $log.Add("  REORDER  $secondaryPath  -  re-order confirmed against the column statistics below")
+            $log.Add("           column | primary before | secondary aligned | merged after")
+            foreach ($s in $statRows) {
+                $log.Add("           $($s.Name)")
+                $log.Add("             before : $($s.Before)")
+                $log.Add("             second : $($s.Secondary)")
+                $log.Add("             after  : $($s.After)")
+            }
+        }
+
         $rowsAdded = $currentData.Count - $rowsBefore
         $totalRowsAdded += $rowsAdded
 
@@ -1263,18 +2382,31 @@ function Invoke-CombineForPrimary {
             $tempPath = $null
             $lastSorted = $sortedData
 
-            $backupPath = Join-Path $backupFolder $secondaryName
+            # A secondary that carried columns the primary does not have is filed
+            # apart from the ordinary backups. Its rows merged, but some of its
+            # COLUMNS did not, so it is the one backup nobody can afford to treat
+            # as a redundant copy of what is now in the primary.
+            $destFolder = $backupFolder
+            if ($aligning -and $align.Dropped.Count -gt 0) {
+                $destFolder = Join-Path $backupFolder 'RemovedColumns-NotMerged'
+            }
+            if (-not (Test-Path $destFolder)) {
+                New-Item -ItemType Directory -Path $destFolder -Force | Out-Null
+            }
+
+            $backupPath = Join-Path $destFolder $secondaryName
             if (Test-Path $backupPath) {
                 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
                 $baseName = [System.IO.Path]::GetFileNameWithoutExtension($secondaryName)
                 $extension = [System.IO.Path]::GetExtension($secondaryName)
-                $backupPath = Join-Path $backupFolder "${baseName}_${timestamp}${extension}"
+                $backupPath = Join-Path $destFolder "${baseName}_${timestamp}${extension}"
             }
 
             Move-Item -Path $secondaryPath -Destination $backupPath -Force -ErrorAction Stop
 
             Write-Host "Successfully merged and backed up: $secondaryName" -ForegroundColor Green
             $log.Add("  MERGED   $secondaryPath  -  read $($data2.Count), new $rowsAdded, moved to $backupPath")
+            if ($alignNote) { $log.Add("           $alignNote") }
             $filesProcessed++
         }
         catch {
@@ -1398,7 +2530,7 @@ try {
             "How do you want to select files to combine?`n`n" +
             "Yes  =  Scan a FOLDER and auto-group duplicates" + [char]0x0A +
             "          (.bak / .backup / .1 ..., and files whose TOA5" + [char]0x0A +
-            "          row 1 shows the same logger serial and table)`n`n" +
+            "          row 1 shows the same model, serial and table)`n`n" +
             "No   =  Manually pick a primary file and secondary files",
             "Combine DAT Files - Choose Mode",
             [System.Windows.Forms.MessageBoxButtons]::YesNoCancel,
@@ -1440,7 +2572,7 @@ try {
                 "A group needs a data file (.dat/.csv/.txt) plus at least one of:`n" +
                 "  - a backup-style duplicate (.bak/.backup/.backup1/.1 ...), or`n" +
                 "  - another data file of the same extension whose TOA5 row 1`n" +
-                "    gives the same logger serial and the same table name, with`n" +
+                "    gives the same model, serial and table name, with`n" +
                 "    a date stamp on the end of its name (_YYYY-MM-DD) marking`n" +
                 "    it as the download rather than the collected file.`n`n" +
                 "The console window lists any group that was found but skipped as`n" +

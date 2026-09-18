@@ -1,9 +1,11 @@
 # Functional test for the merge write path: correctness of the output file, and
 # that an interrupted run cannot damage the primary.
 #
-# Drives Invoke-CombineForPrimary directly with -AutoProceedOnHeaderMatch so no
-# dialogs open. Headers are identical between fixtures, which is the case that
-# auto-proceeds.
+# Drives Invoke-CombineForPrimary directly with -AutoProceedOnHeaderMatch, and
+# stubs every dialog so the file runs unattended. Headers are identical between
+# fixtures, which is the case that auto-proceeds - but auto-proceeding still
+# raises a "Header Row Matches" notification and still puts the row-1 comparison
+# up, and a modal window in a test run is a hang, not a failure.
 $ErrorActionPreference = 'Stop'
 $combine = Join-Path $PSScriptRoot 'Combine DAT files.ps1'
 $fail = 0
@@ -21,6 +23,13 @@ $defs = $src.Substring(0, $cut)
 $defs = $defs -replace '(?s)^.*?\[CmdletBinding\(\)\]\s*param\((?:[^)]|\)(?!\s*\r?\n))*\)', ''
 $SpecialRowCount = 3
 Invoke-Expression $defs
+
+# Dialog stubs, defined AFTER the load so they replace the real ones. This test
+# is about what gets written to disk; every question is answered yes.
+function Show-Notification { param($Message, $Title, $Icon) }
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) return 'Proceed' }
+function Show-ColumnStatsComparison { param($StatRows, $PrimaryName, $SecondaryName, $FilledColumns, $DroppedColumns) return 'Proceed' }
+function Confirm-RecencyOverride { param($PrimaryName, $SecondaryName, $Recency) return $true }
 
 $root = Join-Path $env:TEMP ('mrg_' + [guid]::NewGuid().ToString('N').Substring(0,6))
 New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -42,6 +51,11 @@ function Rows([int]$n, [datetime]$start, [int]$stepMin, [int]$recBase = 0) {
 }
 function Write-Toa5([string]$p, [string[]]$rows, [switch]$Bom) {
   [IO.File]::WriteAllLines($p, ([string[]]($HDR + $rows)), (New-Object System.Text.UTF8Encoding($Bom.IsPresent)))
+  # Modified time follows the last row, the way a file being collected into
+  # does. Written "now" instead, every fixture looks like the newest file in the
+  # folder and the merge's recency check has nothing real to compare.
+  $last = [regex]::Match($rows[-1], '^"?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+  if ($last.Success) { (Get-Item -LiteralPath $p).LastWriteTime = [datetime]$last.Groups[1].Value }
 }
 function Get-DataRows([string]$p) { @(Get-Content -LiteralPath $p | Select-Object -Skip 4 | Where-Object { $_ }) }
 function Test-Bom([string]$p) {

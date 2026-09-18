@@ -7,7 +7,9 @@ $src = Join-Path $PSScriptRoot 'Combine DAT files.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($src, [ref]$null, [ref]$null)
 $want = 'Split-CsvLine', 'Get-FirstFieldRaw', 'Read-DataFileLines', 'Get-SortedDataRows',
         'Get-FileBomEncoding', 'Resolve-OutputEncoding', 'Start-MergeTimer', 'Show-SlowHintIfNeeded',
-        'Backup-File', 'Test-NonAsciiCharacters', 'Invoke-CombineForPrimary'
+        'Backup-File', 'Test-NonAsciiCharacters', 'Invoke-CombineForPrimary',
+        'Split-CsvFieldsRaw', 'Get-LastDataTimestamp', 'Test-PrimaryIsNewer',
+        'Get-ColumnAlignment', 'ConvertTo-AlignedRow', 'Get-ColumnStats', 'Get-ColumnStatsTable'
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     if ($want -contains $fn.Name) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -15,7 +17,12 @@ foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Langua
 # Dialog stubs. Show-HeaderComparison is deliberately NOT loaded from the source:
 # a real run always puts the row-1 comparison up, and the test answers Proceed.
 function Show-Notification { param($Message, $Title, $Icon) }
-function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle) return 'Proceed' }
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) return 'Proceed' }
+function Show-ColumnStatsComparison { param($StatRows, $PrimaryName, $SecondaryName, $FilledColumns, $DroppedColumns) return 'Proceed' }
+# These fixtures are seconds old and written primary-then-secondary, so the
+# recency check has nothing real to compare. Answer Yes and let each case test
+# what it is actually about; test_align.ps1 owns the recency check itself.
+function Confirm-RecencyOverride { param($PrimaryName, $SecondaryName, $Recency) return $true }
 
 $fail = 0
 function Check($name, $cond, $detail) {
@@ -31,6 +38,11 @@ function New-File([string]$Path, [string[]]$Rows, [string[]]$Header = $HDR) {
     $dir = Split-Path -Parent $Path
     if (-not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
     [System.IO.File]::WriteAllLines($Path, ([string[]]($Header + $Rows)), (New-Object System.Text.UTF8Encoding($false)))
+    # Modified time follows the last row, the way a file being collected into
+    # does. Written "now" instead, every fixture looks like the newest file in
+    # the folder and the merge's recency check has nothing real to compare.
+    $last = [regex]::Match($Rows[-1], '^"?(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})')
+    if ($last.Success) { (Get-Item -LiteralPath $Path).LastWriteTime = [datetime]$last.Groups[1].Value }
 }
 function Row([string]$Ts, [int]$Rec, [string]$V = '1.5') { "`"$Ts`",$Rec,$V" }
 function Case([string]$Name) {
