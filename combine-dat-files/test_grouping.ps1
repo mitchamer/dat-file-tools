@@ -13,9 +13,9 @@ foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Langua
 
 $root = Join-Path ([System.IO.Path]::GetTempPath()) ('grp_' + [guid]::NewGuid().ToString('N').Substring(0,6))
 function New-Toa5 {
-    param([string]$Path, [string]$Station, [string]$Serial, [string]$Table, [string[]]$Rows = @('"2026-09-01 00:00:00",1'))
+    param([string]$Path, [string]$Station, [string]$Serial, [string]$Table, [string]$Model = 'CR6', [string[]]$Rows = @('"2026-09-01 00:00:00",1'))
     $lines = @(
-        ('"TOA5","{0}","CR6","{1}","CR6.Std.14.01","prog.cr6","31248","{2}"' -f $Station, $Serial, $Table),
+        ('"TOA5","{0}","{1}","{2}","CR6.Std.14.01","prog.cr6","31248","{3}"' -f $Station, $Model, $Serial, $Table),
         '"TIMESTAMP","VALUE"', '"TS","m"', '"","Smp"'
     ) + $Rows
     [System.IO.File]::WriteAllLines($Path, $lines)
@@ -81,7 +81,7 @@ $results += Test-Case -Name 'stamp_with_time_renamed_primary' -Build {
     'TM_MCL-02_Status_old_copy_KEEP.dat' = '13910_Status_2026-07-01T09-10-30.dat,13910_Status_2026-07-23T15-44.dat'
 }
 
-# 3. Same table name, different loggers -> never merged together.
+# 3. Same table name, different loggers (serial or model) -> never merged together.
 $results += Test-Case -Name 'same_table_different_serial' -Build {
     param($d)
     New-Toa5 (Join-Path $d 'SiteA_Status.dat') 'SiteA' '13910' 'Status'
@@ -91,6 +91,19 @@ $results += Test-Case -Name 'same_table_different_serial' -Build {
 } -Expected @{
     'SiteA_Status.dat' = 'SiteA_Status_2026-09-08.dat'
     'SiteB_Status.dat' = 'SiteB_Status_2026-09-08.dat'
+}
+
+# 3b. Same serial and table, different model -> never merged. Serials can collide
+#     across logger types (a CR6 and a CR1000 can both be 28185).
+$results += Test-Case -Name 'same_serial_different_model' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'CR6_Status.dat') 'Site' '28185' 'Status' -Model 'CR6'
+    New-Toa5 (Join-Path $d 'CR6_Status_2026-09-08.dat') 'Site' '28185' 'Status' -Model 'CR6'
+    New-Toa5 (Join-Path $d 'CR1000_Status.dat') 'Site' '28185' 'Status' -Model 'CR1000'
+    New-Toa5 (Join-Path $d 'CR1000_Status_2026-09-08.dat') 'Site' '28185' 'Status' -Model 'CR1000'
+} -Expected @{
+    'CR6_Status.dat'    = 'CR6_Status_2026-09-08.dat'
+    'CR1000_Status.dat' = 'CR1000_Status_2026-09-08.dat'
 }
 
 # 4. Two files that could each be the collected file -> skipped and reported.
@@ -138,7 +151,7 @@ $results += Test-Case -Name 'download_is_itself_a_primary' -Build {
     'X_DATA_2026-09-08.dat' = 'X_DATA_2026-09-08.dat.bak'
 } -ExpectWarn
 
-# 9. No TOA5 row 1 -> takes no part in serial/table matching.
+# 9. No TOA5 row 1 -> takes no part in model/serial/table matching.
 $results += Test-Case -Name 'non_toa5_ignored' -Build {
     param($d)
     Set-Content -Path (Join-Path $d 'Site_Table.dat') -Value @('a,b', '1,2')

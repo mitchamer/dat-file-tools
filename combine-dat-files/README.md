@@ -1,17 +1,39 @@
 # Combine DAT files
 
 Merges a table's scattered copies — the collected file, its `.bak`/`.backup`
-duplicates, and re-collected or card-converted downloads — into one file, showing
+duplicates, and local manual downloads or remote manual collections — into one file, showing
 a side-by-side header comparison that you must approve before anything is
 written.
 
 Built for TOA5-style output, where the same logger table ends up in several files
 and merging by hand risks stitching together data from different programs, column
-sets or units.
+sets or units. It checks that the primary really is the newer file before merging
+into it, and can shift a secondary's columns into the primary's order when the two
+headers disagree.
 
 Windows PowerShell 5.1+ (7 works). Windows only.
 
 > Merged from the former `README.txt` and `SCRIPT_README.txt`, which overlapped.
+
+## Combine Affinity Files
+
+`Combine Affinity Files.ps1` in this folder is a sibling, not a replacement. It
+is the recursive, non-destructive combiner for trees of daily downloads — TOACI1
+by default, TOA5 too. Use it when hundreds of files are scattered through dated
+subfolders and you want one **new** file per dataset in a `Combined` folder.
+Folder-mode Combine DAT files still owns one-folder TOA5 merges into a live
+collected file.
+
+Matching files merge silently. A dialog appears only when a file's headers do
+not match its group. Sources are left untouched unless you pass `-MoveSources`,
+which moves merged files into `Combined\Sources`.
+
+```powershell
+.\'Combine Affinity Files.ps1' 'C:\Raw Data\affinity'
+.\'Combine Affinity Files.ps1' 'C:\Raw Data\affinity' -DryRun
+```
+
+`test_affinity.ps1` covers grouping, encoding, `-MoveSources`, and Exit All.
 
 ## ⚠ Use at your own risk
 
@@ -23,7 +45,9 @@ Behaviours to understand before pointing it at anything you care about:
 - **The primary file is rewritten in place.** Row 1 and the special rows are
   preserved, but the data section is replaced by the merged, de-duplicated,
   re-sorted result. Original row order is not retained.
-- **Secondary files are moved, not copied**, into `Backup` after a successful merge.
+- **Secondary files are moved, not copied**, into `Backup` after a successful
+  merge — or into `Backup\RemovedColumns-NotMerged` when aligning dropped some of
+  their columns.
 - **De-duplication compares the entire row, case-insensitively.** Two rows sharing
   a timestamp but differing in values are both kept, as they should be — but two
   rows differing *only* in letter case (`NAN` vs `NaN`) collapse to one. This is
@@ -48,7 +72,7 @@ contains what you expect. Then run it live, and leave `-NoBackup` alone.
 
 Run with no arguments and click **Yes** at the mode prompt, then pick a folder. It
 groups each data file with its backup-style duplicates, and with any other data
-file whose TOA5 row 1 shows the same logger serial and table name, then runs the
+file whose TOA5 row 1 shows the same model, logger serial and table name, then runs the
 two-step comparison per group.
 
 ```powershell
@@ -56,8 +80,8 @@ two-step comparison per group.
 ```
 
 Only files sitting **directly** in the chosen folder are scanned — subfolders are
-not entered. These folder names are skipped: `backup`, `bak`, `scd`, `superseded`
-(and the common misspellings `superceded` / `superseeded`).
+not entered at all (`Backup`, `scd`, `superseded`, and everything else). The
+recursive scan is Combine Affinity Files.
 
 ### 2. Manual mode — pick files yourself
 
@@ -124,17 +148,22 @@ preferred.
 **Backup-style secondaries:** `.bak` `.backup` `.backupN` `.1` (any number)
 `.old` `.orig` `.copy` — e.g. `Foo.dat.backup`, `Foo.dat.1`
 
-**Re-collected copies of the same table:** matched on **logger serial** and
-**table name** out of TOA5 row 1, and nothing else — the filename plays no part
-in the match:
+These **stack**, because LoggerNet stacks them. `Foo.dat.backup`,
+`Foo.dat.1.backup` and `Foo.dat.2.backup` all group onto `Foo.dat`.
+
+**Local manual downloads and remote manual collections of the same table:** matched on **model**, **logger serial**
+and **table name** out of TOA5 row 1, and nothing else — the filename plays no
+part in the match. Model is in the key because two different logger types can
+share a serial:
 
 ```
-"TOA5","TM_MCL-02","CR6","13910","CR6.Std.14.01","prog.cr6","31248","Status"
- 1      2 station    3     4 SERIAL 5             6          7       8 TABLE
+"TOA5","ND-19SIB","CR6","28185","CR6.14.5.1 RF4xx.2.1.3","CPU:ND-BGC18-SI_SAA_R11.CR6","42729","LOGGER_DIAGNOSTICS"
+ 1      2 station    3 MODEL  4 SERIAL 5                  6 Program Name               7 ProgSignature  8 TABLE
 ```
 
 Row 1 is what the logger itself wrote, so every naming convention works —
-LoggerNet collections, CardConvert output, renamed files, `(1)` copies:
+LoggerNet automatic collections, local manual downloads, remote manual
+collections, renamed files, `(1)` copies:
 
 ```
 18421_SAA_SAA1_DATA_2026-09-08.dat   ->  18421_SAA1_DATA.dat
@@ -142,12 +171,12 @@ LoggerNet collections, CardConvert output, renamed files, `(1)` copies:
 SAA1_DATA (1).dat                    ->  18421_SAA1_DATA.dat
 ```
 
-Two files are in the same group when row 1 gives them the same serial **and**
-the same table (case-insensitive), and their extensions match. Files with no
-readable TOA5 row 1 have neither field, so they take no part in this — only
-backup-suffix matching covers them.
+Two files are in the same group when row 1 gives them the same model, serial
+**and** table (case-insensitive), and their extensions match. Files with no
+readable TOA5 row 1 have none of those fields, so they take no part in this —
+only backup-suffix matching covers them.
 
-**Which file is the primary** is the one thing serial and table cannot settle:
+**Which file is the primary** is the one thing model, serial and table cannot settle:
 they are identical across the whole group by definition. It has to be the file
 the logger software keeps appending to, or the merged rows end up in a file
 nothing collects into. So exactly one name-shaped rule decides the *role* —
@@ -181,7 +210,19 @@ Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
 Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
 mode, an exact row-2 match skips straight to step 2.
 
-Columns: `# | Primary | Secondary | Status`
+Columns: `# | Primary | Secondary | Status`. On row 1 a **Meaning** column is
+inserted, using the same names ViewPro shows for the TOA5 environment line:
+
+| # | Meaning | Example |
+|---|---|---|
+| 1 | File Format | `TOA5` |
+| 2 | Station Name | `ND-19SIB` |
+| 3 | Model | `CR6` |
+| 4 | CPU Serial Number | `28185` |
+| 5 | OS Version | `CR6.14.5.1 RF4xx.2.1.3` |
+| 6 | Program Name | `CPU:ND-BGC18-SI_SAA_R11.CR6` |
+| 7 | ProgSignature | `42729` |
+| 8 | Table Name | `LOGGER_DIAGNOSTICS` |
 
 | Status | Meaning |
 |---|---|
@@ -194,9 +235,87 @@ The banner is green when values are identical, red when they differ.
 
 | Button | Effect |
 |---|---|
-| Proceed / Proceed Anyway | accept and continue |
-| Decline (Skip File) | skip this secondary only; the scan continues. Esc or closing does the same |
+| Proceed / Proceed Anyway | accept and continue, merging the secondary's rows as they stand. **Disabled** (and not the Enter default) when Align is unavailable — merging as-is would put values under the wrong names |
+| Align Columns & Merge | shift the secondary's columns into the primary's order first — see [Column alignment](#column-alignment). Shown only when it is available, and greyed out with the reason when it is not |
+| Decline (Skip File) | skip this secondary only; the scan continues. Esc or closing does the same. Enter does this too when Align is blocked |
 | Exit All | stop immediately. Already-merged files stay merged |
+
+## The recency check — "are you sure?"
+
+Before any secondary is merged, the primary has to be the **newer** file in
+**both** senses:
+
+- a later **file modified time**, and
+- a later **last timestamp** in column 1 of its last row.
+
+Both, because either alone can lie. Copying a file forward moves its modified
+time without adding a single reading; a file can hold newer readings while
+sitting untouched on a share.
+
+When both hold, this is the ordinary merge — an old archive going into the file
+collection is still appending to. When **either fails**, the files are probably
+the wrong way round: the newer data is in the *secondary*, and merging it into
+the primary leaves the combined result in a file nothing collects into, where the
+next collection will not find it.
+
+The script names the failing check and asks **"are you sure?"**, defaulting to
+**No**. Answering Yes merges anyway and records the override in the merge log.
+
+> The primary's modified time and last timestamp are read **once**, before the
+> first secondary. Re-reading them per file would be meaningless — the first
+> merge rewrites the primary, so its modified time becomes "just now".
+
+## Column alignment
+
+A secondary whose header lists the same measurements in a different *shape* —
+columns added, removed or re-ordered — cannot simply be merged: its fields would
+land under the wrong column names. **Align Columns & Merge** rewrites its data
+rows into the primary's column order first, matching on the column **names** in
+row 2 (case-insensitive), which is the only thing in the file that says what a
+field means.
+
+| Situation | What happens |
+|---|---|
+| Primary has a column the secondary lacks | filled with `NAN` |
+| Secondary has a column the primary lacks | **dropped**, named in the merge log, and the whole secondary is filed under `Backup\RemovedColumns-NotMerged` rather than `Backup` — so the values that did not merge stay recoverable |
+| Shared columns in a different order | re-ordered, then **proved** — see below |
+
+Quoting is preserved byte for byte: fields are moved as raw CSV substrings, so a
+merged row is identical to the one the logger wrote and still de-duplicates
+against the primary's copy of it.
+
+### When alignment is refused
+
+There is **no "are you sure?"** for alignment. When it is unavailable the Align
+button **and** Proceed Anyway are greyed out, Decline is the Enter default, the
+file is skipped, and the scan moves on.
+
+- **The recency check did not pass on both counts.** Rewriting every field of
+  every row is only safe in the direction old-archive → live-file, and recency is
+  the only evidence of which direction that is. Confirming the recency prompt
+  does **not** unlock alignment.
+- **A column name is repeated** in either header, so a field cannot be matched to
+  one source.
+- **The secondary has no column matching the primary's first column**, so its
+  timestamps cannot be placed.
+
+### The re-order proof
+
+Adding or removing a column leaves every other column where it was. A *re-order*
+moves every value in the file, and a wrong map is silent — the rows still parse,
+they are just wrong.
+
+So a re-order is not merged on trust. The merge is done in memory and each
+column's distribution is shown three ways side by side — the primary before, the
+secondary after alignment, and the merged result:
+
+- numeric columns: `n`, `min`, `p5`, `mean`, `p95`, `max`, and the `NAN`/blank count
+- text columns: the commonest values with their counts (`200x"NAN"  3x"TRUE"`)
+- all-distinct columns such as timestamps: the first and last value
+
+A mis-mapped column shows up at once, because it reads like a different
+measurement than the column it now sits beside. **Nothing has been written at
+that point** — declining costs nothing. The same table goes into the merge log.
 
 ## Options
 
@@ -231,7 +350,12 @@ Per secondary you get one of:
     would move to: ...\Backup\18421_SAA_SAA1_DATA_2026-09-08.dat
 
   WOULD ASK: header row (row 2) differs - a real run opens the comparison dialog here.
+    'Align Columns & Merge' would be offered: drop 2 column(s) (PingSpeed, PingResult).
   Not counted below, because the answer would be yours.
+
+  RECENCY CHECK FAILED: last timestamp in file: secondary '2026-09-13 11:58:00'
+  is not older than primary '2026-01-01 00:00:00'
+    A real run would ask 'are you sure?' before merging this file.
 ```
 
 The row counts are what a real run would produce, so the "rows added" total is
