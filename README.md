@@ -14,6 +14,7 @@ Windows Forms dialogs.
 | **[Combine DAT files](combine-dat-files/)** | One table is scattered across a live collected file (primary), `.bak` and `.backup` copies and timestamped manual downloads (local or remote). You want all available records in one continuous file. Normally you would do this manually, but you risk merging files with mismatched headers, mismatched column counts, and unsorted dates. This script handles those issues for you. | [docs](combine-dat-files/README.md) |
 | **[Combine Affinity Files](combine-dat-files/)** | Hundreds of daily downloads scattered through dated subfolders, and you want one new file per dataset. Recursive, non-destructive, TOACI1 (and TOA5). Not a replacement for folder-mode Combine DAT files | [docs](combine-dat-files/README.md#combine-affinity-files) |
 | **[Decimate](decimate/)** | A file has more rows than you need, and you want hourly, six-hourly or daily — keeping the full record recoverable | [docs](decimate/README.md) |
+| **[Fix Timestamps](fix-timestamps/)** | The first column is `9/1/2026` or `2026/9/1` rather than `YYYY-MM-DD HH:MM:SS`. Every other tool here sorts rows as text, which that breaks silently. Decides each file's date format from the file's own contents and refuses the ones it cannot settle | [docs](fix-timestamps/README.md) |
 
 ## ⚠ Use at your own risk
 
@@ -55,6 +56,9 @@ Clone or download, then:
 # recursive combine of a download tree (writes Combined\, does not touch sources)
 .\combine-dat-files\'Combine Affinity Files.ps1' 'C:\Data\affinity'
 
+# check a folder's timestamp format without changing anything
+.\fix-timestamps\Fix-Timestamps.ps1 'C:\Data\Site' -DryRun
+
 # thin a file to hourly, previewing before it writes
 .\decimate\Decimate.ps1
 
@@ -70,12 +74,18 @@ picker for the tree to scan.
 
 ```
 combine-dat-files/    Combine DAT files, Combine Affinity Files, context-menu installers, docs
-decimate/            the thinning tool, its tests, and its docs
+decimate/             the thinning tool, its tests, and its docs
+fix-timestamps/       the timestamp normaliser, its context-menu installer, tests and docs
 ```
 
-Each folder is self-contained — copy just the one you need. The context-menu
-installer is for Combine DAT files; it resolves the script beside it, so it keeps
-working wherever the folder lives.
+Each folder is self-contained — copy just the one you need. `combine-dat-files`
+and `fix-timestamps` each carry their own context-menu installer, and each
+resolves the script beside it, so they keep working wherever the folder lives.
+
+**Order of operations:** if a folder's timestamps are not already
+`YYYY-MM-DD HH:MM:SS`, run **Fix Timestamps** before combining or decimating.
+Both of those sort rows as text, which is only correct once the first column is
+in that shape.
 
 ## Licence
 
