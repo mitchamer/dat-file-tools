@@ -317,10 +317,41 @@ A mis-mapped column shows up at once, because it reads like a different
 measurement than the column it now sits beside. **Nothing has been written at
 that point** — declining costs nothing. The same table goes into the merge log.
 
+## Appending new downloads (unattended)
+
+The reverse of the usual direction: a fresh download from the logger
+(`CR6_SAA_SAA1_DATA.dat`) is appended into the long-lived file other software
+reads (`18421_SAA1_DATA.dat`, named in SAASuite's `pref_project.txt`), and the
+long-lived name is kept.
+
+```powershell
+.\Append-NewData.ps1 -Folder 'C:\Data\LLD SAA1' -Prefix '18421_'
+```
+
+Every `.dat` in the folder not starting with the prefix is paired with the
+`<prefix><X>.dat` whose `<X>` is the longest ending of its name, and merged with
+`-Unattended`:
+
+- the recency check is logged, not asked — the download is *expected* to be newer
+- row 2 must match exactly, and row 1's table name (field 8); the rest of row 1
+  (station name etc.) is ignored. Anything else skips that file — no alignment
+- pairs that pass merge even when others fail; merged downloads move to `Backup`
+
+Exit code `0` only when there was at least one download and all of them merged.
+A per-project `.bat` can chain on it:
+
+```bat
+powershell -NoProfile -ExecutionPolicy Bypass -File "C:\tools\dat-file-tools\combine-dat-files\Append-NewData.ps1" -Folder "%~dp0." -Prefix "18421_"
+if errorlevel 1 ( pause & exit /b 1 )
+call "%~dp0Raw2Data_Launch.bat"
+```
+
 ## Options
 
 | Option | Effect |
 |---|---|
+| `-SecondaryFile <paths>` | Files to merge into `-PrimaryFile`, skipping the file picker |
+| `-Unattended` | No dialogs; needs `-PrimaryFile` and `-SecondaryFile`. See [Appending new downloads](#appending-new-downloads-unattended) |
 | `-SpecialRowCount <int>` | Special rows after row 1 (default 3) |
 | `-NoBackup` | Skip the pre-merge backup of the primary |
 | `-DryRun` | Report only — no dialogs, nothing written, moved or backed up |
