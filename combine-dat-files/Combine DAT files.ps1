@@ -200,6 +200,18 @@ param(
     [Parameter(Position = 0)]
     [string]$PrimaryFile,
 
+    # File(s) to merge into -PrimaryFile, in place of the file picker.
+    [Parameter()]
+    [string[]]$SecondaryFile,
+
+    # No dialogs, for scripted appends of NEWER downloads (Append-NewData.ps1).
+    # Needs -PrimaryFile and -SecondaryFile. The recency check is logged, not
+    # asked - the secondary is expected to be newer. A file is skipped when row 2
+    # differs or the TOA5 table name (row 1, field 8) differs; the rest of row 1
+    # is ignored. Exits 0 only when every secondary merged, otherwise 1.
+    [Parameter()]
+    [switch]$Unattended,
+
     [Parameter()]
     [int]$SpecialRowCount = 3,
 
@@ -1925,6 +1937,7 @@ function Invoke-CombineForPrimary {
         [string]$Encoding = 'Auto',
         [switch]$NoBackup,
         [switch]$AutoProceedOnHeaderMatch,
+        [switch]$Unattended,
         [switch]$DryRun
     )
 
@@ -2164,7 +2177,13 @@ function Invoke-CombineForPrimary {
         # Asked before the header dialogs rather than after them, because it is a
         # question about the whole merge: if the answer is no, the two header
         # comparisons were never worth reading.
-        if (-not $recency.Ok) {
+        if (-not $recency.Ok -and $Unattended) {
+            # Expected: an unattended run appends newer downloads into the file
+            # downstream software reads, which is this check the wrong way round.
+            Write-Host "  Secondary is newer than the primary - expected when appending. $($recency.Reason)" -ForegroundColor DarkGray
+            $log.Add("  RECENCY  $secondaryPath  -  $($recency.Reason) - unattended append")
+        }
+        elseif (-not $recency.Ok) {
             $msg = "'$secondaryName' is not older than the primary - $($recency.Reason)"
             Write-Warning $msg
             $sure = Confirm-RecencyOverride `
@@ -2183,7 +2202,22 @@ function Invoke-CombineForPrimary {
         $aligning = $false
 
         # STEP 1: Compare the header row (row 2).
-        if ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
+        if ($Unattended) {
+            # Checked in code rather than asked. Row 2 must match exactly. Of row 1
+            # only the table name counts: the station name differs between a
+            # logger's own download and the LoggerNet-collected file.
+            $why = $null
+            if ($primaryRow2 -ne $secondaryRow2) { $why = 'header row (row 2) differs' }
+            elseif ((Split-CsvLine -Line $originalHeader)[7] -ne (Split-CsvLine -Line $header2)[7]) { $why = 'TOA5 table name (row 1, field 8) differs' }
+            if ($why) {
+                Write-Host "Skipping $secondaryName ($why)" -ForegroundColor Yellow
+                $log.Add("  SKIPPED  $secondaryPath  -  $why")
+                $result.Warnings.Add("'$secondaryName' not merged: $why")
+                continue
+            }
+            $row2Choice = 'Proceed'
+        }
+        elseif ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
             Write-Host "Header row (row 2) MATCHES - auto-proceeding to file-info comparison." -ForegroundColor Green
             Show-Notification -Title "Header Row Matches" -Message (
                 "The header row (row 2) matches.`n`nPrimary:      $primaryName`nSecondary:  $secondaryName`n`nProceeding to the file-info (row 1) comparison."
@@ -2222,13 +2256,15 @@ function Invoke-CombineForPrimary {
         }
 
         # STEP 2: Compare the file info row (row 1).
-        $fileInfoChoice = Show-HeaderComparison `
-            -PrimaryHeader   $originalHeader `
-            -SecondaryHeader $header2 `
-            -PrimaryName     $primaryName `
-            -SecondaryName   $secondaryName `
-            -RowNumber       1 `
-            -ComparisonTitle "Step 2 of 2: File Info Comparison"
+        $fileInfoChoice = if ($Unattended) { 'Proceed' } else {
+            Show-HeaderComparison `
+                -PrimaryHeader   $originalHeader `
+                -SecondaryHeader $header2 `
+                -PrimaryName     $primaryName `
+                -SecondaryName   $secondaryName `
+                -RowNumber       1 `
+                -ComparisonTitle "Step 2 of 2: File Info Comparison"
+        }
 
         if ($fileInfoChoice -eq 'ExitAll') {
             Write-Host "Exit All requested at file info comparison. Stopping." -ForegroundColor Yellow
@@ -2494,7 +2530,12 @@ function Invoke-CombineForPrimary {
 
 #region Main Script
 
+$unattendedExit = 1
 try {
+    if ($Unattended -and -not ($PrimaryFile -and $SecondaryFile -and (Test-Path -LiteralPath $PrimaryFile -PathType Leaf))) {
+        throw "-Unattended needs an existing -PrimaryFile and at least one -SecondaryFile."
+    }
+
     # Determine whether a file OR a folder was supplied (parameter or right-click).
     $primaryFromArg = $null
     $folderFromArg = $null
@@ -2668,10 +2709,12 @@ try {
     }
 
     $secondaryFilter = "Text and Backup (*.txt;*.csv;*.dat;*.bak;*.backup)|*.txt;*.csv;*.dat;*.bak;*.backup|All Files|*.*"
-    $secondaryFiles = Select-FileDialog -Title "Select one or more files to merge into primary" `
-        -InitialDir (Split-Path -Parent $primaryPath) `
-        -Filter $secondaryFilter `
-        -MultiSelect $true
+    $secondaryFiles = if ($SecondaryFile) { $SecondaryFile } else {
+        Select-FileDialog -Title "Select one or more files to merge into primary" `
+            -InitialDir (Split-Path -Parent $primaryPath) `
+            -Filter $secondaryFilter `
+            -MultiSelect $true
+    }
 
     if (-not $secondaryFiles -or $secondaryFiles.Count -eq 0) {
         Write-Host "No secondary files selected. Exiting." -ForegroundColor Yellow
@@ -2686,7 +2729,9 @@ try {
         -SpecialRowCount $SpecialRowCount `
         -Encoding $Encoding `
         -NoBackup:$NoBackup `
+        -Unattended:$Unattended `
         -DryRun:$DryRun
+    if ($res.FilesProcessed -eq @($secondaryFiles).Count) { $unattendedExit = 0 }
 
     if ($res.Aborted) {
         Write-Host "`nStopped by 'Exit All'. Remaining selected files were not processed." -ForegroundColor Yellow
@@ -2700,9 +2745,9 @@ try {
         Write-Host "Primary file: $primaryPath"
         Write-Host "$('=' * 70)" -ForegroundColor Yellow
 
-        Show-Notification -Title "Merge Aborted" -Icon Warning -Message (
+        if (-not $Unattended) { Show-Notification -Title "Merge Aborted" -Icon Warning -Message (
             "Merge aborted.`n`nNo files were merged and nothing was moved to Backup.`nAll files remain unchanged.`n`nPrimary file:`n$primaryPath"
-        )
+        ) }
     }
     else {
         Write-Host "`n$('=' * 70)" -ForegroundColor Green
@@ -2715,12 +2760,12 @@ try {
         Write-Host "$(if ($DryRun) { 'Unchanged file' } else { 'Updated file' }): $primaryPath"
         Write-Host "$('=' * 70)" -ForegroundColor Green
 
-        Show-Notification -Title $(if ($DryRun) { "Dry Run Complete" } else { "Merge Complete" }) -Message (
+        if (-not $Unattended) { Show-Notification -Title $(if ($DryRun) { "Dry Run Complete" } else { "Merge Complete" }) -Message (
             $(if ($DryRun) { "Dry run complete - nothing was written.`n`nFiles that would merge: $($res.FilesProcessed)`nRows the primary would hold: $($res.FinalRows)" }
               else { "Merging complete.`n`nFiles processed: $($res.FilesProcessed)`nTotal rows: $($res.FinalRows)" }) +
             "`nTimestamp conflicts: $($res.TsConflicts)`n`n" +
             $(if ($DryRun) { "Unchanged file:" } else { "Final file:" }) + "`n$primaryPath"
-        )
+        ) }
     }
 }
 catch {
@@ -2728,5 +2773,6 @@ catch {
     Write-Error $_.ScriptStackTrace
     $global:LASTEXITCODE = 1
 }
+if ($Unattended) { exit $unattendedExit }
 
 #endregion
