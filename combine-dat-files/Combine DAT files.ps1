@@ -1792,8 +1792,13 @@ function Add-Toa5SerialTableGroups {
             every dated download merges into it, oldest stamp first;
           * two or more collected files (two archives of one table in one
             folder) -> reported and skipped, never merged into a guess;
-          * dated downloads only, no collected file -> reported and skipped;
-            which download should become the archive is the user's call.
+          * dated downloads only, no collected file (the logger is set to start a
+            new file per collection instead of appending) -> reported and
+            skipped. Merging into one of the downloads would leave the record in
+            a file nothing collects into, and the next collection would start
+            another new file, so the pile would rebuild. The fix is to set the
+            logger back to appending; once the collected file exists, these
+            downloads merge into it on the next run. The warning names it.
 
         Files with no readable TOA5 row 1 carry no model, serial or table, so they
         take no part in this pass (backup-suffix matching still covers them).
@@ -1807,9 +1812,12 @@ function Add-Toa5SerialTableGroups {
     )
 
     # A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
-    # and the underscore / dotted-time variants LoggerNet produces for automatic
-    # collection, local manual downloads and remote manual collections.
-    $stampSuffix = '_(?<stamp>\d{4}-\d{2}-\d{2}(?:[T_]\d{2}[-.]\d{2}(?:[-.]\d{2})?)?)$'
+    # _2026_10_07_2001, and the underscore / dotted-time variants LoggerNet produces
+    # for automatic collection, local manual downloads and remote manual collections.
+    # The date separator is - or _, the time separator is optional (LoggerNet writes
+    # a bare HHmm), and a trailing _N is the counter LoggerNet adds when two
+    # collections land in the same minute.
+    $stampSuffix = '_(?<stamp>\d{4}[-_]\d{2}[-_]\d{2}(?:[T_]\d{2}[-._]?\d{2}(?:[-._]?\d{2})?)?)(?:_(?<seq>\d+))?$'
 
     # Every top-level data file that actually carries a TOA5 row 1. Row 1 is read
     # once per file - these folders often live on a slow network share.
@@ -1824,6 +1832,9 @@ function Add-Toa5SerialTableGroups {
 
         $fields = Get-Toa5EnvironmentFields -FilePath $f.FullName
         if (-not $fields) { continue }
+        # Station is not part of the match - it is only used to name a collected
+        # file that does not exist yet. See the $collected.Count -eq 0 branch.
+        $station = $fields[1].Trim()
         $model = $fields[2].Trim()
         $serial = $fields[3].Trim()
         $table = $fields[7].Trim()
@@ -1831,15 +1842,24 @@ function Add-Toa5SerialTableGroups {
             [string]::IsNullOrWhiteSpace($serial) -or
             [string]::IsNullOrWhiteSpace($table)) { continue }
 
-        $stamp = if ($base -match $stampSuffix) { $Matches['stamp'] } else { $null }
+        # Seq is the same-minute counter: _2026_10_08_0201_1 came after
+        # _2026_10_08_0201, which the stamp alone cannot say.
+        $stamp = $null
+        $seq = 0
+        if ($base -match $stampSuffix) {
+            $stamp = $Matches['stamp']
+            if ($Matches['seq']) { $seq = [int]$Matches['seq'] }
+        }
 
         $members.Add([pscustomobject]@{
-            File   = $f
-            Model  = $model
-            Serial = $serial
-            Table  = $table
-            Ext    = $ext
-            Stamp  = $stamp
+            File    = $f
+            Station = $station
+            Model   = $model
+            Serial  = $serial
+            Table   = $table
+            Ext     = $ext
+            Stamp   = $stamp
+            Seq     = $seq
         })
     }
     if ($members.Count -lt 2) { return }
@@ -1860,17 +1880,32 @@ function Add-Toa5SerialTableGroups {
 
         $label = "model $($set[0].Model), serial $($set[0].Serial), table '$($set[0].Table)' (.$($set[0].Ext))"
         $collected = @($set | Where-Object { -not $_.Stamp })
-        # Oldest download first so merges happen in chronological order.
+        # Oldest download first so merges happen in chronological order. Sorted on
+        # the stamp's digits alone: one folder can hold both 2026-09-08T15-44 and
+        # 2026_09_08_1544, and as raw text those two do not order against each other.
         $downloads = @(
             $set |
                 Where-Object { $_.Stamp } |
-                Sort-Object -Property @{ Expression = { $_.Stamp } }, @{ Expression = { $_.File.Name } }
+                Sort-Object -Property @{ Expression = { $_.Stamp -replace '\D', '' } },
+                                       @{ Expression = { $_.Seq } },
+                                       @{ Expression = { $_.File.Name } }
         )
 
         if ($collected.Count -eq 0) {
+            # Every file is a dated download: the logger is set to start a new
+            # file per collection instead of appending, so no collected file was
+            # ever created. Merging into one of the downloads would leave the
+            # merged record in a file nothing collects into, and the next
+            # collection would start yet another new file - the pile rebuilds.
+            # The fix is at the logger, not here, so this is reported and left.
             $names = ($downloads | ForEach-Object { $_.File.Name }) -join ', '
+            $station = $downloads[0].Station
+            $suggested = if ([string]::IsNullOrWhiteSpace($station)) { "<station>_$($downloads[0].Table).$($downloads[0].Ext)" }
+                         else { '{0}_{1}.{2}' -f $station, $downloads[0].Table, $downloads[0].Ext }
             Write-Warning ("Skipped $label`: every file is a dated download and none is the " +
-                "collected file ($names). Merge them manually.")
+                "collected file ($names). Set the logger's collection back to append so it " +
+                "keeps one file - '$suggested' is the name LoggerNet uses - then run this " +
+                "again and these will merge into it.")
             continue
         }
         if ($collected.Count -gt 1) {
@@ -1919,7 +1954,13 @@ function Invoke-CombineForPrimary {
 
         With -AutoProceedOnHeaderMatch, an identical row-2 header skips the
         header dialog, notifies the user, and proceeds directly to the row-1
-        file-info comparison.
+        file-info comparison - and if row 1 is byte-identical too, that second
+        comparison is skipped as well, because both windows would be showing two
+        identical strings. One folder-scan group can hold a hundred collections
+        of one table, and a hundred OK clicks on a comparison that cannot differ
+        is not approval, it is a queue. Anything that DOES differ still opens the
+        window, and every other check - recency, column count, timestamp format -
+        runs unchanged.
 
         With -DryRun nothing is written, moved or backed up and no dialog is
         shown: the two comparisons are made in code and reported, so the numbers
@@ -2200,6 +2241,7 @@ function Invoke-CombineForPrimary {
         }
 
         $aligning = $false
+        $skipFileInfoDialog = $false
 
         # STEP 1: Compare the header row (row 2).
         if ($Unattended) {
@@ -2218,10 +2260,20 @@ function Invoke-CombineForPrimary {
             $row2Choice = 'Proceed'
         }
         elseif ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
-            Write-Host "Header row (row 2) MATCHES - auto-proceeding to file-info comparison." -ForegroundColor Green
-            Show-Notification -Title "Header Row Matches" -Message (
-                "The header row (row 2) matches.`n`nPrimary:      $primaryName`nSecondary:  $secondaryName`n`nProceeding to the file-info (row 1) comparison."
-            )
+            if ($originalHeader -eq $header2) {
+                # Both rows byte-identical: the notification and the row-1 window
+                # would each show two identical strings. One group can hold a
+                # hundred collections of one table, so that is two hundred clicks
+                # to approve nothing. Say it on the console and move on.
+                Write-Host "Rows 1 and 2 are identical - merging without asking." -ForegroundColor Green
+                $skipFileInfoDialog = $true
+            }
+            else {
+                Write-Host "Header row (row 2) MATCHES - auto-proceeding to file-info comparison." -ForegroundColor Green
+                Show-Notification -Title "Header Row Matches" -Message (
+                    "The header row (row 2) matches.`n`nPrimary:      $primaryName`nSecondary:  $secondaryName`n`nProceeding to the file-info (row 1) comparison."
+                )
+            }
             $row2Choice = 'Proceed'
         }
         else {
@@ -2256,7 +2308,7 @@ function Invoke-CombineForPrimary {
         }
 
         # STEP 2: Compare the file info row (row 1).
-        $fileInfoChoice = if ($Unattended) { 'Proceed' } else {
+        $fileInfoChoice = if ($Unattended -or $skipFileInfoDialog) { 'Proceed' } else {
             Show-HeaderComparison `
                 -PrimaryHeader   $originalHeader `
                 -SecondaryHeader $header2 `
