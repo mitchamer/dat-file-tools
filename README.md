@@ -15,6 +15,7 @@ Windows Forms dialogs.
 | **[Combine Affinity Files](combine-dat-files/)** | Hundreds of daily downloads scattered through dated subfolders, and you want one new file per dataset. Recursive, non-destructive, TOACI1 (and TOA5). Not a replacement for folder-mode Combine DAT files | [docs](combine-dat-files/README.md#combine-affinity-files) |
 | **[Decimate](decimate/)** | A file has more rows than you need, and you want hourly, six-hourly or daily — keeping the full record recoverable | [docs](decimate/README.md) |
 | **[Fix Timestamps](fix-timestamps/)** | The first column is `9/1/2026` or `2026/9/1` rather than `YYYY-MM-DD HH:MM:SS`. Every other tool here sorts rows as text, which that breaks silently. Decides each file's date format from the file's own contents and refuses the ones it cannot settle | [docs](fix-timestamps/README.md) |
+| **[CSV to TOA5](csv-to-toa5/)** | A logger's own CSV download (a DT2485 IPI logger, with its 26-row header) needs to be TOA5 before the other tools can read it. Writes `<name>_TOA5.dat` beside it, leaves the download untouched, and fixes the DT2485's repeated and mislabelled column names | [docs](csv-to-toa5/README.md) |
 | **[Populate Missing Data](populate-missing-data/)** | A file is full of `NAN` where another file logged the same measurements (a CR6 table whose Modbus reads of a DT2485 dropped out, and the DT2485's own download). Fills only the gaps, matching columns by their values on the rows both files share, so the names do not have to match | [docs](populate-missing-data/README.md) |
 
 ## ⚠ Use at your own risk
@@ -60,6 +61,9 @@ Clone or download, then:
 # check a folder's timestamp format without changing anything
 .\fix-timestamps\Fix-Timestamps.ps1 'C:\Data\Site' -DryRun
 
+# turn a DT2485 download into TOA5 (writes <name>_TOA5.dat beside it)
+.\csv-to-toa5\CSV-to-TOA5.ps1 'C:\Data\DT2485_DT50583_20261008_103345_DH11-29.csv'
+
 # fill a file's NAN gaps from another file, approving the column mapping
 .\populate-missing-data\Populate-MissingData.ps1 'C:\Data\Site.dat' 'C:\Data\DT2485_TOA5.dat'
 
@@ -80,6 +84,7 @@ picker for the tree to scan.
 combine-dat-files/    Combine DAT files, Combine Affinity Files, context-menu installers, docs
 decimate/             the thinning tool, its tests, and its docs
 fix-timestamps/       the timestamp normaliser, its context-menu installer, tests and docs
+csv-to-toa5/          the download-to-TOA5 converter, its context-menu installer, tests and docs
 populate-missing-data/  the gap filler, its context-menu installer, tests and docs
 ```
 
