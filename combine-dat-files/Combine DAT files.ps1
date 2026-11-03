@@ -1785,7 +1785,7 @@ function Add-Toa5SerialTableGroups {
         nothing collects into. Model, serial and table cannot tell those apart
         (they are identical by definition here), so exactly one name-shaped rule decides
         the ROLE, never the match: a file whose name ends in a download date
-        stamp (_YYYY-MM-DD, optionally with a time) is a download, and anything
+        stamp (_YYYY-MM-DD or _YYYY_MM_DD, optionally with a time) is a download, and anything
         else is a collected file.
 
           * exactly one collected file in the group -> it is the primary and
@@ -1808,8 +1808,11 @@ function Add-Toa5SerialTableGroups {
 
     # A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
     # and the underscore / dotted-time variants LoggerNet produces for automatic
-    # collection, local manual downloads and remote manual collections.
-    $stampSuffix = '_(?<stamp>\d{4}-\d{2}-\d{2}(?:[T_]\d{2}[-.]\d{2}(?:[-.]\d{2})?)?)$'
+    # collection, local manual downloads and remote manual collections. The date
+    # may also be underscored with a bare time (_2026_10_11_0204), as a
+    # scheduled LoggerNet task names its output. The date's two separators must
+    # be the same character, so _2026-10_11 is not a stamp.
+    $stampSuffix = '_(?<stamp>\d{4}(?<sep>[-_])\d{2}\k<sep>\d{2}(?:[T_]\d{2}[-.]?\d{2}(?:[-.]?\d{2})?)?)$'
 
     # Every top-level data file that actually carries a TOA5 row 1. Row 1 is read
     # once per file - these folders often live on a slow network share.
@@ -1860,11 +1863,13 @@ function Add-Toa5SerialTableGroups {
 
         $label = "model $($set[0].Model), serial $($set[0].Serial), table '$($set[0].Table)' (.$($set[0].Ext))"
         $collected = @($set | Where-Object { -not $_.Stamp })
-        # Oldest download first so merges happen in chronological order.
+        # Oldest download first so merges happen in chronological order. Sorted on
+        # the stamp's digits alone, so _2026-10-11 and _2026_10_12_0204 order by
+        # date rather than by separator character.
         $downloads = @(
             $set |
                 Where-Object { $_.Stamp } |
-                Sort-Object -Property @{ Expression = { $_.Stamp } }, @{ Expression = { $_.File.Name } }
+                Sort-Object -Property @{ Expression = { $_.Stamp -replace '\D', '' } }, @{ Expression = { $_.File.Name } }
         )
 
         if ($collected.Count -eq 0) {
@@ -1920,6 +1925,9 @@ function Invoke-CombineForPrimary {
         With -AutoProceedOnHeaderMatch, an identical row-2 header skips the
         header dialog, notifies the user, and proceeds directly to the row-1
         file-info comparison.
+
+        A secondary whose rows 1 and 2 are identical to the primary's, with the
+        primary newer on both recency counts, is merged without either dialog.
 
         With -DryRun nothing is written, moved or backed up and no dialog is
         shown: the two comparisons are made in code and reported, so the numbers
@@ -2129,11 +2137,17 @@ function Invoke-CombineForPrimary {
             $alignOffer = ($bits -join '; ') + '.'
         }
 
+        # Rows 1 and 2 identical and the primary newer on both counts: the two
+        # comparison dialogs would show nothing but green, so they are not
+        # shown. This is what lets a folder of a hundred scheduled downloads
+        # merge in one go. Any difference at all still opens the comparison.
+        $row2Same = ($primaryRow2 -eq $secondaryRow2)
+        $row1Same = ($originalHeader -eq $header2)
+        $exactMatch = $recency.Ok -and $row2Same -and $row1Same
+
         # A dry run decides nothing and shows nothing: the two comparisons the
         # dialogs would put to you are made in code and reported instead.
         if ($DryRun) {
-            $row2Same = ($primaryRow2 -eq $secondaryRow2)
-            $row1Same = ($originalHeader -eq $header2)
 
             if (-not $recency.Ok) {
                 Write-Host "  RECENCY CHECK FAILED: $($recency.Reason)" -ForegroundColor Yellow
@@ -2166,7 +2180,7 @@ function Invoke-CombineForPrimary {
             $filesProcessed++
 
             Write-Host "  WOULD MERGE: $secondaryName" -ForegroundColor Green
-            Write-Host "    row 2 matches$(if ($row1Same) { ', row 1 matches' } else { ', row 1 differs - a real run would ask about it' })" -ForegroundColor DarkGray
+            Write-Host "    row 2 matches$(if ($exactMatch) { ', row 1 matches - a real run merges it without asking' } elseif ($row1Same) { ', row 1 matches' } else { ', row 1 differs - a real run would ask about it' })" -ForegroundColor DarkGray
             Write-Host "    would add $wouldAdd new unique row(s); primary would hold $($currentData.Count)" -ForegroundColor DarkGray
             Write-Host "    would move to: $(Join-Path $backupFolder $secondaryName)" -ForegroundColor DarkGray
             $log.Add("  WOULD MERGE  $secondaryPath  -  read $($data2.Count), new $wouldAdd")
@@ -2217,6 +2231,10 @@ function Invoke-CombineForPrimary {
             }
             $row2Choice = 'Proceed'
         }
+        elseif ($exactMatch) {
+            Write-Host "Rows 1 and 2 match exactly and the primary is newer - merging $secondaryName without asking." -ForegroundColor Green
+            $row2Choice = 'Proceed'
+        }
         elseif ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {
             Write-Host "Header row (row 2) MATCHES - auto-proceeding to file-info comparison." -ForegroundColor Green
             Show-Notification -Title "Header Row Matches" -Message (
@@ -2256,7 +2274,7 @@ function Invoke-CombineForPrimary {
         }
 
         # STEP 2: Compare the file info row (row 1).
-        $fileInfoChoice = if ($Unattended) { 'Proceed' } else {
+        $fileInfoChoice = if ($Unattended -or $exactMatch) { 'Proceed' } else {
             Show-HeaderComparison `
                 -PrimaryHeader   $originalHeader `
                 -SecondaryHeader $header2 `

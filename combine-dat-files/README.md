@@ -182,9 +182,10 @@ the logger software keeps appending to, or the merged rows end up in a file
 nothing collects into. So exactly one name-shaped rule decides the *role* —
 never the match:
 
-- a name ending in a date stamp — `_YYYY-MM-DD`, optionally with a time
-  (`_2026-09-08T15-44`, `_2026-09-08T15-44-30`, `_2026-09-08_15-44`) — is a
-  **download**; anything else is the **collected file**
+- a name ending in a date stamp — `_YYYY-MM-DD` or `_YYYY_MM_DD`, optionally
+  with a time (`_2026-09-08T15-44`, `_2026-09-08T15-44-30`, `_2026-09-08_15-44`,
+  `_2026_10_11_0204`) — is a **download**; anything else is the **collected file**.
+  Downloads merge in date order whichever separator their stamp uses
 - one collected file in the group → it is the primary, and the dated downloads
   merge into it oldest stamp first
 - two or more files that could each be the collected file → **reported and
@@ -205,6 +206,13 @@ the three checks above, and the merge log:
 ```
 
 ## The comparison window
+
+**A secondary whose rows 1 and 2 are identical to the primary's, with the
+primary newer on both [recency](#the-recency-check--are-you-sure) counts, is
+merged without either window** — they would show nothing but green. A folder of a
+hundred scheduled downloads (`GK DAQ2_Status_2026_10_11_0204.dat`, …) then merges
+with one right-click on the folder. Any difference, in any field, still opens the
+comparison for that file. The merge log lists every file merged.
 
 Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
 Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
