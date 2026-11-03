@@ -106,6 +106,19 @@ Check 'already TOA5 -> refused' ($rec.Status -eq 'Refuse' -and $rec.Detail -like
 $rec = Convert-CsvToToa5 -FilePath (Save 'nonames.csv' @('a,b', '2021-10-08 10:15:00,1', '2021-10-08 10:20:00,2'))
 Check 'no column-name row -> refused' ($rec.Status -eq 'Refuse' -and $rec.Detail -like '*column-name*') $rec.Detail
 
+$zp = Join-Path $root 'zeros.csv'
+[System.IO.File]::WriteAllBytes($zp, (New-Object byte[] 5000))
+$rec = Convert-CsvToToa5 -FilePath $zp
+Check 'an all-zero file (an unfinished copy) is named as such' ($rec.Status -eq 'Refuse' -and $rec.Detail -like '*zero*did not finish*') $rec.Detail
+$np = Join-Path $root 'nul.csv'
+[System.IO.File]::WriteAllBytes($np, ([System.Text.Encoding]::ASCII.GetBytes("TIMESTAMP,A`r`n2021-10-08 10:15:00,1`r`n") + (New-Object byte[] 100)))
+$rec = Convert-CsvToToa5 -FilePath $np
+Check 'a partly zeroed file is refused as damaged' ($rec.Status -eq 'Refuse' -and $rec.Detail -like '*NUL*') $rec.Detail
+$ep = Join-Path $root 'empty.csv'
+[System.IO.File]::WriteAllBytes($ep, (New-Object byte[] 0))
+$rec = Convert-CsvToToa5 -FilePath $ep
+Check 'an empty file is refused as empty' ($rec.Status -eq 'Refuse' -and $rec.Detail -like '*empty*') $rec.Detail
+
 Write-Host "`n=== the script end to end ===" -ForegroundColor Cyan
 $p = Save 'e2e.csv' $dt
 $before = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($p))

@@ -403,6 +403,33 @@ function Resolve-Toa5Columns {
     return , $cols.ToArray()
 }
 
+function Test-NotText {
+    <#
+        A reason when the file is not text at all, else $null. A copy that
+        did not finish - to a network drive, or from a cloud placeholder - can
+        be the right size but every byte zero, and without this it would be
+        reported as having no timestamped rows.
+    #>
+    param([string]$FilePath)
+
+    $buf = New-Object byte[] 65536
+    $stream = [System.IO.File]::OpenRead($FilePath)
+    try { $read = $stream.Read($buf, 0, $buf.Length) } finally { $stream.Dispose() }
+    if ($read -eq 0) { return 'The file is empty.' }
+    # UTF-16 text has zero bytes in it legitimately; it carries a BOM.
+    if ($read -ge 2 -and (($buf[0] -eq 0xFF -and $buf[1] -eq 0xFE) -or ($buf[0] -eq 0xFE -and $buf[1] -eq 0xFF))) { return $null }
+
+    $zeros = 0
+    for ($i = 0; $i -lt $read; $i++) { if ($buf[$i] -eq 0) { $zeros++ } }
+    if ($zeros -eq $read) {
+        return "Every byte at the start of the file is zero - it is the right size but holds no data, which usually means a copy that did not finish. Copy the file again from the original download."
+    }
+    if ($zeros -gt 0) {
+        return "The file contains zero (NUL) bytes, so it is not a text download - it may be damaged or only partly copied. Copy it again from the original download."
+    }
+    return $null
+}
+
 function Convert-CsvToToa5 {
     <#
         Reads the download and returns the TOA5 lines, or a refusal. Writes
@@ -415,6 +442,9 @@ function Convert-CsvToToa5 {
         Path = $FilePath; Status = 'Ok'; Detail = ''; Lines = $null
         Rows = 0; Columns = 0; Dropped = @(); First = $null; Last = $null; Station = $null; Renamed = @()
     }
+    $damage = Test-NotText -FilePath $FilePath
+    if ($damage) { $rec.Status = 'Refuse'; $rec.Detail = $damage; return $rec }
+
     $lines = [System.IO.File]::ReadAllLines($FilePath)
     $reason = ''
     $layout = Read-CsvDownload -Lines $lines -Reason ([ref]$reason)

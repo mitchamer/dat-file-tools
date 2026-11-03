@@ -56,6 +56,7 @@ Nothing is written when:
 | **A row with a different number of fields from the name row** | Its values would land under the wrong names |
 | **No column-name row** | Needs a row whose first field is `TIMESTAMP`, `Date/Time`, `DateTime`, `Date` or `Time`, above the data |
 | **A file that is already TOA5** | Nothing to do |
+| **A file that is empty, all zero bytes, or contains NUL bytes** | Not a text download. An all-zero file of the right size is usually a copy that did not finish (to a network drive, or from a cloud placeholder): copy it again from the original |
 
 An existing `<name>_TOA5.dat` is not overwritten unless you answer **Yes** to the
 prompt, or pass `-Force` from the terminal.
@@ -96,13 +97,13 @@ the gaps, and pick the `_TOA5.dat` to fill from.
 .\test_csv_to_toa5.ps1
 ```
 
-34 checks:
+37 checks:
 
 - a DT2485-style download: the header, the dropped separators, the mislabelled
   sensor renamed from its address, the second-block names, units, values,
   `NAN`, status codes
 - a plain CSV
-- every refusal
+- every refusal, including empty, all-zero and partly zeroed files
 - the script end to end: output name, no BOM, CRLF, source untouched, no
   overwrite without `-Force`
 
