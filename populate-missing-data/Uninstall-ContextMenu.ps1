@@ -25,7 +25,12 @@ if ($AllUsers) {
 
 $rootKey = if ($AllUsers) { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
 $base = 'Software\Classes'
-$paths = foreach ($ext in @('.dat', '.csv')) {
+$paths = @(
+    "$base\*\shell\PopulateMissingData",
+    "$base\*\shell\PopulateMissingDataCheck"
+)
+# Where the first version of the installer put them.
+$paths += foreach ($ext in @('.dat', '.csv')) {
     "$base\SystemFileAssociations\$ext\shell\PopulateMissingData"
     "$base\SystemFileAssociations\$ext\shell\PopulateMissingDataCheck"
 }

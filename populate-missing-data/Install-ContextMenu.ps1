@@ -57,9 +57,11 @@ $iconValue = if (Test-Path -LiteralPath $iconPath) { "`"$iconPath`"" } else { $n
 $rootKey = if ($AllUsers) { [Microsoft.Win32.Registry]::LocalMachine } else { [Microsoft.Win32.Registry]::CurrentUser }
 $base = 'Software\Classes'
 
-# SystemFileAssociations attaches the verbs to the extension whatever program
-# the user has .dat or .csv opening in, without touching that association.
-$extensions = @('.dat', '.csv')
+# Registered on every file ('*') and narrowed with AppliesTo, rather than
+# under SystemFileAssociations\.dat: Explorer skips SystemFileAssociations
+# verbs when .dat is set to open with an app such as Notepad++
+# (UserChoice = Applications\notepad++.exe), so the entries never appeared.
+$appliesTo = 'System.FileExtension:=.dat OR System.FileExtension:=.csv'
 
 function Set-ContextEntry {
     param(
@@ -67,13 +69,16 @@ function Set-ContextEntry {
         [string]$SubPath,
         [string]$Label,
         [string]$Command,
-        [string]$Icon
+        [string]$Icon,
+        [string]$AppliesTo
     )
     $key = $RootKey.CreateSubKey($SubPath)
     try {
         $key.SetValue('', $Label)
-        # 'Icon' belongs on the verb key itself, not on its command subkey.
+        # 'Icon' and 'AppliesTo' belong on the verb key itself, not on its
+        # command subkey.
         if ($Icon) { $key.SetValue('Icon', $Icon) }
+        if ($AppliesTo) { $key.SetValue('AppliesTo', $AppliesTo) }
         $cmd = $key.CreateSubKey('command')
         try { $cmd.SetValue('', $Command) } finally { $cmd.Dispose() }
     }
@@ -83,9 +88,14 @@ function Set-ContextEntry {
 
 $scope = if ($AllUsers) { 'HKLM (all users)' } else { 'HKCU (current user)' }
 Write-Host "Installing context-menu entries under $scope ..." -ForegroundColor Cyan
-foreach ($ext in $extensions) {
-    Set-ContextEntry -RootKey $rootKey -SubPath "$base\SystemFileAssociations\$ext\shell\PopulateMissingData"      -Label "Populate Missing Data"                    -Command $cmdFill  -Icon $iconValue
-    Set-ContextEntry -RootKey $rootKey -SubPath "$base\SystemFileAssociations\$ext\shell\PopulateMissingDataCheck" -Label "Check Populate Missing Data (no changes)" -Command $cmdCheck -Icon $iconValue
+Set-ContextEntry -RootKey $rootKey -SubPath "$base\*\shell\PopulateMissingData"      -Label "Populate Missing Data"                    -Command $cmdFill  -Icon $iconValue -AppliesTo $appliesTo
+Set-ContextEntry -RootKey $rootKey -SubPath "$base\*\shell\PopulateMissingDataCheck" -Label "Check Populate Missing Data (no changes)" -Command $cmdCheck -Icon $iconValue -AppliesTo $appliesTo
+
+# Entries from the first version of this installer, which Explorer ignored.
+foreach ($ext in @('.dat', '.csv')) {
+    foreach ($verb in @('PopulateMissingData', 'PopulateMissingDataCheck')) {
+        $rootKey.DeleteSubKeyTree("$base\SystemFileAssociations\$ext\shell\$verb", $false)
+    }
 }
 
 Write-Host "`nDone. Target script:" -ForegroundColor Green
