@@ -114,6 +114,68 @@ Check 'filled value is the source text, unquoted' ((Split-CsvFieldsRaw $after[4 
 Check 'constant gap filled from Temp 1' ((Split-CsvFieldsRaw $after[14])[5] -eq '5.500000') ((Split-CsvFieldsRaw $after[14])[5])
 Check 'Invoke writes nothing' (([System.IO.File]::ReadAllLines("$d\t.dat") -join "`n") -eq ($before -join "`n")) ''
 
+Write-Host "`n=== edge columns (first / last) ===" -ForegroundColor Cyan
+$d = Join-Path $root 'edge'; New-Item -ItemType Directory $d -Force | Out-Null
+# A constant temperature at the very end of the table, after its two proven
+# axis columns; the source has the same three plus a logger column after.
+$edT = [ordered]@{
+    'Ch_1' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Ch_2' = { param($k) Wave 0.009 0.0004 $k 2 }
+    'Ch_3' = { param($k) if ($k -in 10, 11) { '"NAN"' } else { '7.375' } }
+}
+$edS = [ordered]@{
+    'Volts'    = { param($k) '3.71' }
+    'Axis A 9' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Axis B 9' = { param($k) Wave 0.009 0.0004 $k 2 }
+    'Temp 9'   = { param($k) '7.375000' }
+    'Reset'    = { param($k) '0' }
+}
+New-Toa5 -Path "$d\t.dat" -Rows $N -Columns $edT
+New-Toa5 -Path "$d\s.dat" -Rows $N -Columns $edS
+$rec = Invoke-PopulateMissingData -TargetPath "$d\t.dat" -SourcePath "$d\s.dat"
+Check 'last constant column placed from the two proven columns before it' ((Map-Of $rec 'Ch_3').Method -eq 'Edge' -and (Map-Of $rec 'Ch_3').SourceName -eq 'Temp 9') ((Map-Of $rec 'Ch_3') | Out-String)
+Check 'its gaps filled from the column the spacing points to' ($rec.FieldsFilled -eq 2 -and (Split-CsvFieldsRaw $rec.Lines[14])[4] -eq '7.375000') (Split-CsvFieldsRaw $rec.Lines[14])[4]
+
+# The same shape, but the column after the proven pair in the source is a
+# temperature of 7.375 while the target's last column is a constant 0: the
+# spacing points to a column that does not agree, so it stays unmapped - and
+# is NOT matched to the source's constant-0 'Reset' further along.
+$edT2 = [ordered]@{
+    'Ch_1' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Ch_2' = { param($k) Wave 0.009 0.0004 $k 2 }
+    'Spare' = { param($k) if ($k -eq 10) { '"NAN"' } else { '0' } }
+}
+New-Toa5 -Path "$d\t2.dat" -Rows $N -Columns $edT2
+$rec = Invoke-PopulateMissingData -TargetPath "$d\t2.dat" -SourcePath "$d\s.dat"
+Check 'last column whose spacing points to a disagreeing column stays unmapped' ((Map-Of $rec 'Spare').Source -lt 0 -and $rec.FieldsFilled -eq 0) ((Map-Of $rec 'Spare') | Out-String)
+
+# Two constant columns past the proven pair: only the first is in reach.
+$edT3 = [ordered]@{
+    'Ch_1' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Ch_2' = { param($k) Wave 0.009 0.0004 $k 2 }
+    'Ch_3' = { param($k) if ($k -eq 10) { '"NAN"' } else { '7.375' } }
+    'Ch_4' = { param($k) if ($k -eq 10) { '"NAN"' } else { '0' } }
+}
+New-Toa5 -Path "$d\t3.dat" -Rows $N -Columns $edT3
+$rec = Invoke-PopulateMissingData -TargetPath "$d\t3.dat" -SourcePath "$d\s.dat"
+Check 'edge rule reaches one column past the proven pair, no further' ((Map-Of $rec 'Ch_3').Method -eq 'Edge' -and (Map-Of $rec 'Ch_4').Source -lt 0) "$((Map-Of $rec 'Ch_3').Method) / $((Map-Of $rec 'Ch_4').SourceName)"
+
+# A constant column at the START, before its two proven columns.
+$edT4 = [ordered]@{
+    'T0'   = { param($k) if ($k -eq 10) { '"NAN"' } else { '7.375' } }
+    'Ch_1' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Ch_2' = { param($k) Wave 0.009 0.0004 $k 2 }
+}
+$edS4 = [ordered]@{
+    'Temp 9'   = { param($k) '7.375000' }
+    'Axis A 9' = { param($k) Wave 0.004 0.0004 $k 1 }
+    'Axis B 9' = { param($k) Wave 0.009 0.0004 $k 2 }
+}
+New-Toa5 -Path "$d\t4.dat" -Rows $N -Columns $edT4
+New-Toa5 -Path "$d\s4.dat" -Rows $N -Columns $edS4
+$rec = Invoke-PopulateMissingData -TargetPath "$d\t4.dat" -SourcePath "$d\s4.dat"
+Check 'first constant column placed from the two proven columns after it' ((Map-Of $rec 'T0').Method -eq 'Edge' -and (Map-Of $rec 'T0').SourceName -eq 'Temp 9' -and $rec.FieldsFilled -eq 1) ((Map-Of $rec 'T0') | Out-String)
+
 Write-Host "`n=== matching by name ===" -ForegroundColor Cyan
 $d = Join-Path $root 'name'; New-Item -ItemType Directory $d -Force | Out-Null
 $nameT = [ordered]@{ 'Level' = { param($k) if ($k -eq 5) { 'NAN' } else { Wave 100 3 $k 4 } } }

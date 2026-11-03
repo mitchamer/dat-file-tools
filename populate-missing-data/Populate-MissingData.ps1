@@ -48,8 +48,15 @@
                      other constant by its values. It is mapped only when it
                      sits BETWEEN two proven columns that both keep the same
                      column spacing in the source, and the column that spacing
-                     points to also agrees on the shared rows. Nothing is
-                     inferred past the last proven column.
+                     points to also agrees on the shared rows.
+      4. EDGE        The same for a constant column at the very END of the
+                     table (the last sensor's temperature) or the start, which
+                     has proven columns on one side only. The TWO columns
+                     immediately next to it must both be proven and keep their
+                     spacing in the source; the column one further along must
+                     agree on the shared rows. It reaches exactly one column
+                     past them - an edge column is not itself proof - so it
+                     never walks on into the logger's own columns.
 
     RECORD and the timestamp column are never filled: a record number belongs
     to the logger that wrote it. A target column that none of the rules settles
@@ -491,7 +498,7 @@ function Resolve-ColumnMap {
         Returns one record per target column (except the timestamp):
           Target / TargetName
           Source / SourceName   -1 / $null when unmapped
-          Method                Name | Values | Between | (unmapped) Skipped |
+          Method                Name | Values | Between | Edge | (unmapped) Skipped |
                                 Constant | Ambiguous | NoMatch | NameDisagrees
           Rate / Median / N     the evidence on the shared rows
           Alternates            other source columns proven to hold the same
@@ -604,6 +611,44 @@ function Resolve-ColumnMap {
         $rec.Note = '{0:P2} of {1} shared readings agree, median difference {2:G3}' -f $best.Rate, $best.N, $best.Median
     }
 
+    # Rules 3 and 4 place an unproven column $i from two proven anchor
+    # columns $a and $b: every pair of their source candidates that keeps the
+    # target's spacing (source b - source a = b - a) points to one source
+    # column, $i - $b further on from b's. Each pointed-to column must still
+    # agree on the shared rows; the ones that do are returned best first,
+    # with Conflict set when two of them disagree with each other.
+    $propose = {
+        param([int]$a, [int]$b, [int]$i)
+        $proposals = @{}
+        foreach ($ca in $candidates[$a]) {
+            foreach ($cb in $candidates[$b]) {
+                if (($cb.Source - $ca.Source) -ne ($b - $a)) { continue }
+                $j = $cb.Source + ($i - $b)
+                if ($j -lt 1 -or $j -ge $sCount -or $proposals.ContainsKey($j)) { continue }
+                if ($SourceFile.Names[$j] -ieq 'RECORD') { continue }
+                $m = Measure-Agreement -TargetValues $tRead[$i] -SourceValues $sRead[$j]
+                if ($m.N -ge $MinOverlap -and $m.Rate -ge $MinAgreement) {
+                    $proposals[$j] = [pscustomobject]@{ Source = $j; Rate = $m.Rate; Median = $m.Median; Mean = $m.Mean; N = $m.N }
+                }
+            }
+        }
+        if ($proposals.Count -eq 0) { return $null }
+        $sorted = Get-RankedCandidates -Candidates @($proposals.Values)
+        $conflict = $false
+        foreach ($c in $sorted | Select-Object -Skip 1) {
+            if ((Measure-Agreement -TargetValues $sRead[$sorted[0].Source] -SourceValues $sRead[$c.Source]).Rate -lt $MinAgreement) { $conflict = $true; break }
+        }
+        return [pscustomobject]@{ Sorted = $sorted; Conflict = $conflict }
+    }
+    $settle = {
+        param($rec, $p, [string]$method, [string]$note)
+        $best = $p.Sorted[0]
+        $rec.Source = $best.Source; $rec.SourceName = $SourceFile.Names[$best.Source]; $rec.Method = $method
+        $rec.Rate = $best.Rate; $rec.Median = $best.Median; $rec.N = $best.N
+        $rec.Alternates = @($p.Sorted | Select-Object -Skip 1 | ForEach-Object { $_.Source })
+        $rec.Note = '{0}; {1:P2} of {2} shared readings agree' -f $note, $best.Rate, $best.N
+    }
+
     # 3. Between: settle constant (or otherwise unproven) columns from the
     # column spacing of the proven ones on either side.
     $proven = @($result.Values | Where-Object { $_.Method -in @('Name', 'Values') } | ForEach-Object { $_.Target } | Sort-Object)
@@ -614,36 +659,44 @@ function Resolve-ColumnMap {
         $right = @($proven | Where-Object { $_ -gt $i }) | Select-Object -First 1
         if ($null -eq $left -or $null -eq $right) { continue }
 
-        $proposals = @{}
-        foreach ($cl in $candidates[$left]) {
-            foreach ($cr in $candidates[$right]) {
-                if (($cr.Source - $cl.Source) -ne ($right - $left)) { continue }
-                $j = $cl.Source + ($i - $left)
-                if ($j -lt 1 -or $j -ge $sCount -or $proposals.ContainsKey($j)) { continue }
-                if ($SourceFile.Names[$j] -ieq 'RECORD') { continue }
-                $m = Measure-Agreement -TargetValues $tRead[$i] -SourceValues $sRead[$j]
-                if ($m.N -ge $MinOverlap -and $m.Rate -ge $MinAgreement) {
-                    $proposals[$j] = [pscustomobject]@{ Source = $j; Rate = $m.Rate; Median = $m.Median; Mean = $m.Mean; N = $m.N }
-                }
-            }
-        }
-        if ($proposals.Count -eq 0) { continue }
-        $sorted = Get-RankedCandidates -Candidates @($proposals.Values)
-        $best = $sorted[0]
-        $conflict = $false
-        foreach ($c in $sorted | Select-Object -Skip 1) {
-            if ((Measure-Agreement -TargetValues $sRead[$best.Source] -SourceValues $sRead[$c.Source]).Rate -lt $MinAgreement) { $conflict = $true; break }
-        }
-        if ($conflict) {
+        $p = & $propose $left $right $i
+        if (-not $p) { continue }
+        if ($p.Conflict) {
             $rec.Method = 'Ambiguous'
             $rec.Note = 'the proven columns either side point to source columns that disagree with each other'
             continue
         }
-        $rec.Source = $best.Source; $rec.SourceName = $SourceFile.Names[$best.Source]; $rec.Method = 'Between'
-        $rec.Rate = $best.Rate; $rec.Median = $best.Median; $rec.N = $best.N
-        $rec.Alternates = @($sorted | Select-Object -Skip 1 | ForEach-Object { $_.Source })
-        $rec.Note = "between proven '{0}' and '{1}', same column spacing; {2:P2} of {3} shared readings agree" -f `
-            $Target.Names[$left], $Target.Names[$right], $best.Rate, $best.N
+        & $settle $rec $p 'Between' ("between proven '{0}' and '{1}', same column spacing" -f $Target.Names[$left], $Target.Names[$right])
+    }
+
+    # 4. Edge: a constant column with proven columns on ONE side only - the
+    # last reading of the last sensor (a temperature at the end of the table),
+    # or the first. It is placed only when the two columns IMMEDIATELY next to
+    # it are both proven and keep their spacing in the source, and it reaches
+    # exactly one column past them: an edge column does not count as proven,
+    # so the rule never walks on into the logger's own columns beyond.
+    foreach ($i in 1..($tCount - 1)) {
+        $rec = $result[$i]
+        if ($rec.Method -notin @('Constant', 'NoMatch')) { continue }
+        $hasLeft = @($proven | Where-Object { $_ -lt $i }).Count -gt 0
+        $hasRight = @($proven | Where-Object { $_ -gt $i }).Count -gt 0
+        if ($hasLeft -and -not $hasRight -and ($proven -contains ($i - 1)) -and ($proven -contains ($i - 2))) {
+            $a = $i - 2; $b = $i - 1; $side = 'after'
+        }
+        elseif ($hasRight -and -not $hasLeft -and ($proven -contains ($i + 1)) -and ($proven -contains ($i + 2))) {
+            $a = $i + 2; $b = $i + 1; $side = 'before'
+        }
+        else { continue }
+
+        $p = & $propose $a $b $i
+        if (-not $p) { continue }
+        if ($p.Conflict) {
+            $rec.Method = 'Ambiguous'
+            $rec.Note = "the proven columns $side it point to source columns that disagree with each other"
+            continue
+        }
+        $first, $second = if ($side -eq 'after') { $a, $b } else { $b, $a }
+        & $settle $rec $p 'Edge' ("next $side proven '{0}' and '{1}', same column spacing" -f $Target.Names[$first], $Target.Names[$second])
     }
 
     foreach ($r in $result.Values) {

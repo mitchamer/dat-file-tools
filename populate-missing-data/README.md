@@ -38,7 +38,8 @@ has to be backed up by the rows **both** files already have readings for:
 |---|---|
 | **Name** | A source column with the same name (case-insensitive) — unless the shared rows show its values disagree, which refuses the column |
 | **Values** | Each target column is compared with every source column on the shared timestamps. A source column qualifies when at least 95% (`-MinAgreement`) of at least 20 (`-MinOverlap`) shared readings agree. The best qualifier wins |
-| **Between** | A column whose values barely change (a temperature reading `5.5` for five years) proves nothing by its values — `0` matches every other `0`. It is mapped only when it sits **between two proven columns** that keep the same column spacing in the source, and the column that spacing points to agrees on the shared rows. Nothing is inferred past the last proven column |
+| **Between** | A column whose values barely change (a temperature reading `5.5` for five years) proves nothing by its values — `0` matches every other `0`. It is mapped only when it sits **between two proven columns** that keep the same column spacing in the source, and the column that spacing points to agrees on the shared rows |
+| **Edge** | The same for a constant column at the very **end** of the table — typically the last sensor's temperature — or the start, which has proven columns on one side only. The **two columns immediately next to it** must both be proven and keep their spacing in the source, and the column one further along must agree on the shared rows. It reaches exactly one column past them (an edge column is not itself proof), so it never walks on into the logger's own columns such as `RESET` or `USB` |
 
 Two readings **agree** when `|target − source| ≤ 0.00001 + 0.2% of |target|`.
 That absorbs rounding between loggers (`5.4375` vs `5.435`); two different
@@ -121,8 +122,9 @@ path, which goes stale the moment the folder moves.
 .\test_populate.ps1
 ```
 
-37 checks: matching by values with different names and order, by name, the
-Between rule and its limit, constant columns not taken as proof, ambiguity,
+42 checks: matching by values with different names and order, by name, the
+Between rule and its limit, the Edge rule at the end and start of a table and
+its one-column reach, constant columns not taken as proof, ambiguity,
 full precision preferred and the fall-back copy used, every value that is never
 copied (including out-of-range readings), repeated source timestamps, refusals, round-trip fidelity (BOM, LF,
 quoting), and the script end to end (`-DryRun` writes nothing; a real run backs
