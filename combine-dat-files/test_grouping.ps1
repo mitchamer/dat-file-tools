@@ -33,8 +33,10 @@ function Test-Case {
     $groups = @($emitted | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] })
     $actual = @{}
     foreach ($g in $groups) {
-        $actual[[System.IO.Path]::GetFileName($g.Primary)] =
-            (($g.Secondaries | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -join ',')
+        $pname = [System.IO.Path]::GetFileName($g.Primary)
+        $actual[$pname] = (($g.Secondaries | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -join ',')
+        # Every primary is a file that already exists: nothing here creates one.
+        if (-not (Test-Path -LiteralPath $g.Primary)) { Write-Host "    primary does not exist: $($g.Primary)" }
     }
     $ok = $true
     foreach ($k in $Expected.Keys) {
@@ -114,12 +116,50 @@ $results += Test-Case -Name 'ambiguous_two_collected' -Build {
     New-Toa5 (Join-Path $d '18421_SAA1_DATA_2026-09-08.dat') 'LLD_SAA1' '18421' 'SAA1_DATA'
 } -Expected @{} -ExpectWarn
 
-# 5. Dated downloads only, no collected file -> skipped and reported.
+# 5. Dated downloads only, no collected file -> skipped and reported. Merging
+#    into a download would leave the record in a file nothing collects into, and
+#    the logger would start another new file next time, so the pile rebuilds.
 $results += Test-Case -Name 'downloads_only' -Build {
     param($d)
     New-Toa5 (Join-Path $d '18421_SAA1_DATA_2026-09-08.dat') 'LLD_SAA1' '18421' 'SAA1_DATA'
     New-Toa5 (Join-Path $d '18421_SAA1_DATA_2026-09-01.dat') 'LLD_SAA1' '18421' 'SAA1_DATA'
 } -Expected @{} -ExpectWarn
+
+# 5b. The Government Knob folders: a logger set to start a new file per collection,
+#     LoggerNet's underscore stamp (_YYYY_MM_DD_HHmm) and its _N same-minute
+#     counter. Every one of these is a download, so there is still no collected
+#     file and the group is still refused - but before the stamp pattern covered
+#     underscores they all looked COLLECTED, and the warning said the opposite.
+$results += Test-Case -Name 'underscore_stamps_are_downloads_not_collected' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_08_0201.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_07_2001.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_08_0201_1.dat') 'GK DAQ2' '28193' 'Status'
+} -Expected @{} -ExpectWarn
+
+# 5c. The same folder once the logger is set back to appending: LoggerNet's
+#     collected file exists, and the whole pile merges into it, oldest first.
+#     The _N counter orders after the stamp it repeats, not before it.
+$results += Test-Case -Name 'underscore_stamps_merge_into_collected' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_08_0201.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_07_2001.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_08_0201_1.dat') 'GK DAQ2' '28193' 'Status'
+} -Expected @{
+    'GK DAQ2_Status.dat' = 'GK DAQ2_Status_2026_10_07_2001.dat,GK DAQ2_Status_2026_10_08_0201.dat,GK DAQ2_Status_2026_10_08_0201_1.dat'
+}
+
+# 5d. Hyphen and underscore stamps in one folder still merge oldest-first: as raw
+#     text '2026-09-08...' and '2026_09_01...' do not order against each other.
+$results += Test-Case -Name 'mixed_stamp_separators_sort_by_date' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'X_DATA.dat') 'X' '11111' 'DATA'
+    New-Toa5 (Join-Path $d 'X_DATA_2026-09-08.dat') 'X' '11111' 'DATA'
+    New-Toa5 (Join-Path $d 'X_DATA_2026_09_01_0000.dat') 'X' '11111' 'DATA'
+} -Expected @{
+    'X_DATA.dat' = 'X_DATA_2026_09_01_0000.dat,X_DATA_2026-09-08.dat'
+}
 
 # 6. Extensions must match; a .csv export is not merged into the .dat.
 $results += Test-Case -Name 'extension_must_match' -Build {

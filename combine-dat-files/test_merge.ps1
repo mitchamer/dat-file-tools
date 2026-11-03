@@ -99,6 +99,53 @@ Check 'removes the temp file on failure' $cleansUp 'no cleanup on failure'
 $noDirectWrite = -not (Select-String -Path $combine -Pattern 'WriteAllLines\(\$PrimaryPath' -Quiet)
 Check 'never writes straight over the primary' $noDirectWrite 'still writes directly to the primary'
 
+Write-Host "`n=== identical rows 1 and 2 merge without a dialog ===" -ForegroundColor Cyan
+# A folder-scan group can hold a hundred collections of one table, every one of
+# them byte-identical in rows 1 and 2. Both comparison windows would be showing
+# two identical strings, so neither may open - count dialogs instead of
+# answering them.
+$script:dialogs = 0
+function Show-Notification { param($Message, $Title, $Icon) $script:dialogs++ }
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) $script:dialogs++; return 'Proceed' }
+function Confirm-RecencyOverride { param($PrimaryName, $SecondaryName, $Recency) $script:dialogs++; return $true }
+
+$qDir = Join-Path $root 'quiet'
+New-Item -ItemType Directory -Path $qDir -Force | Out-Null
+# The collected file holds the newest rows, so the recency check passes on its
+# own - this is about the two header dialogs, not about overriding a check.
+$qPrimary = Join-Path $qDir 'T_Status.dat'
+Write-Toa5 $qPrimary (Rows 1 ([datetime]'2026-10-10 02:01:00') 1 99)
+$qDownloads = 1..3 | ForEach-Object {
+    $p = Join-Path $qDir ("T_Status_2026_10_0{0}_0201.dat" -f $_)
+    Write-Toa5 $p (Rows 1 ([datetime]"2026-10-0$_ 02:01:00") 1 $_)
+    $p
+}
+$qRes = Invoke-CombineForPrimary -PrimaryPath $qPrimary -SecondaryPaths $qDownloads `
+    -SpecialRowCount 3 -AutoProceedOnHeaderMatch
+Check 'no dialog raised for identical rows 1 and 2' ($script:dialogs -eq 0) "$script:dialogs dialog(s) raised"
+Check 'every download still merged' ($qRes.FilesProcessed -eq 3) "processed $($qRes.FilesProcessed)"
+Check 'all four rows present' ((Get-DataRows $qPrimary).Count -eq 4) "got $((Get-DataRows $qPrimary).Count) rows"
+Check 'rows sorted oldest first' ((Get-DataRows $qPrimary) -join '|' -match '10-01.*10-02.*10-03.*10-10') 'not sorted'
+# _2026_1* and not _2026*: the pre-merge backup of the primary is in there too,
+# named T_Status_<yyyyMMdd>_<HHmmss>.dat.
+Check 'downloads moved to Backup' ((Get-ChildItem (Join-Path $qDir 'Backup') -Filter 'T_Status_2026_1*').Count -eq 3) 'not all backed up'
+
+# Row 2 identical but row 1 differing: the file-info window still has something
+# to show, so it must still open.
+$qRow1 = Join-Path $qDir 'T_Status_2026_10_11_0201.dat'
+Write-Toa5 $qRow1 (Rows 1 ([datetime]'2026-10-11 02:01:00') 1 50)
+(Get-Content -LiteralPath $qRow1) | ForEach-Object { $_ -replace '"TM_Test"', '"TM_Test_RENAMED"' } |
+    Set-Content -LiteralPath $qRow1
+$script:dialogs = 0
+Invoke-CombineForPrimary -PrimaryPath $qPrimary -SecondaryPaths @($qRow1) `
+    -SpecialRowCount 3 -AutoProceedOnHeaderMatch | Out-Null
+Check 'a differing row 1 still opens the comparison' ($script:dialogs -gt 0) 'merged without asking'
+
+# Restore the silent stubs for anything added after this block.
+function Show-Notification { param($Message, $Title, $Icon) }
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) return 'Proceed' }
+function Confirm-RecencyOverride { param($PrimaryName, $SecondaryName, $Recency) return $true }
+
 Write-Host "`n=== the slow-merge hint ===" -ForegroundColor Cyan
 Check 'hint threshold is a 15 s param default' (Select-String -Path $combine -Pattern '\[double\]\$AfterSeconds = 15' -Quiet) 'threshold missing'
 Check 'hint names the file to watch' (Select-String -Path $combine -Pattern 'should be growing' -Quiet) 'hint text missing'
