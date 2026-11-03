@@ -161,14 +161,26 @@ Check 'both gaps filled' ($rec.FieldsFilled -eq 2) $rec.FieldsFilled
 
 Write-Host "`n=== values never copied ===" -ForegroundColor Cyan
 $d = Join-Path $root 'skip'; New-Item -ItemType Directory $d -Force | Out-Null
-$skT = [ordered]@{ 'A' = { param($k) if ($k -in 3, 4, 5, 6) { '"NAN"' } else { Wave 0.004 0.0005 $k 7 } } }
-$skS = [ordered]@{ 'A' = { param($k) switch ($k) { 3 { '0.999998' } 4 { '-0.999998' } 5 { '2.147484E+09' } 6 { '"NAN"' } default { Wave 0.004 0.0005 $k 7 } } } }
+# Readings near 1, so 0.999998 is inside the column's range and only the
+# skip list can stop it; -0.999998 is outside it either way.
+$skT = [ordered]@{ 'A' = { param($k) if ($k -in 3, 4, 5, 6) { '"NAN"' } else { Wave 1 0.0005 $k 7 } } }
+$skS = [ordered]@{ 'A' = { param($k) switch ($k) { 3 { '0.999998' } 4 { '-0.999998' } 5 { '2.147484E+09' } 6 { '"NAN"' } default { Wave 1 0.0005 $k 7 } } } }
 New-Toa5 -Path "$d\t.dat" -Rows $N -Columns $skT
 New-Toa5 -Path "$d\s.dat" -Rows $N -Columns $skS
 $rec = Invoke-PopulateMissingData -TargetPath "$d\t.dat" -SourcePath "$d\s.dat"
 Check 'sensor-error 0.999998, -0.999998, 2.147484E+09 and NAN are not copied' ($rec.FieldsFilled -eq 0 -and $rec.GapsSourceMissing -eq 4) "$($rec.FieldsFilled) filled, $($rec.GapsSourceMissing) missing"
 $rec = Invoke-PopulateMissingData -TargetPath "$d\t.dat" -SourcePath "$d\s.dat" -SkipSourceValues @()
-Check '-SkipSourceValues @() lets 0.999998 through, still not the 1e9 code' ($rec.FieldsFilled -eq 2) $rec.FieldsFilled
+Check '-SkipSourceValues @() lets an in-range 0.999998 through, still not the 1e9 code' ($rec.FieldsFilled -eq 1 -and $rec.GapsOutOfRange -eq 1) "$($rec.FieldsFilled) filled, $($rec.GapsOutOfRange) out of range"
+
+$d = Join-Path $root 'range'; New-Item -ItemType Directory $d -Force | Out-Null
+# A temperature that reads ~5 everywhere; the source has a 163 error reading
+# (below the 1e9 code cut-off) and a plausible 5.2 in two of the gaps.
+$rgT = [ordered]@{ 'T' = { param($k) if ($k -in 30, 31, 32) { '"NAN"' } else { (5 + 0.2 * [Math]::Sin($k)).ToString('0.000', $inv) } } }
+$rgS = [ordered]@{ 'T' = { param($k) switch ($k) { 30 { '163' } 31 { '-7.224803E+08' } default { (5 + 0.2 * [Math]::Sin($k)).ToString('0.000', $inv) } } } }
+New-Toa5 -Path "$d\t.dat" -Rows $N -Columns $rgT
+New-Toa5 -Path "$d\s.dat" -Rows $N -Columns $rgS
+$rec = Invoke-PopulateMissingData -TargetPath "$d\t.dat" -SourcePath "$d\s.dat"
+Check 'values far outside the column''s own range (163, -7.2E+08) are not copied' ($rec.GapsOutOfRange -eq 2 -and $rec.FieldsFilled -eq 1) "$($rec.GapsOutOfRange) out of range, $($rec.FieldsFilled) filled"
 
 Write-Host "`n=== repeated timestamps in the source ===" -ForegroundColor Cyan
 $d = Join-Path $root 'dups'; New-Item -ItemType Directory $d -Force | Out-Null
@@ -177,7 +189,7 @@ $dpS = [ordered]@{ 'A' = { param($k) Wave 1 0.5 $k 8 } }
 New-Toa5 -Path "$d\t.dat" -Rows $N -Columns $dpT
 New-Toa5 -Path "$d\s.dat" -Rows $N -Columns $dpS
 $sl = [System.Collections.Generic.List[string]]([System.IO.File]::ReadAllLines("$d\s.dat"))
-$sl.Add("`"$(Stamp 7)`",999,4.444")              # same time as row 7, different value
+$sl.Add("`"$(Stamp 7)`",999,1.234")              # same time as row 7, different (plausible) value
 $sl.Add("`"$(Stamp 8)`",998,$(Wave 1 0.5 8 8))")  # same time as row 8, same value
 [System.IO.File]::WriteAllLines("$d\s.dat", $sl)
 $rec = Invoke-PopulateMissingData -TargetPath "$d\t.dat" -SourcePath "$d\s.dat"

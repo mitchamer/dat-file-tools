@@ -67,6 +67,12 @@
       * any value listed in -SkipSourceValues (default 0.999998 and -0.999998,
         the DT2485 sensor-error reading) and anything of magnitude 1e9 or more
         (the 2147483647 family of "no reading" codes)
+      * a value far outside the TARGET column's own readings - beyond its 1st
+        to 99th percentile widened by that spread again on each side (and by
+        at least 10% of the value). Matching proves two columns hold the same
+        measurement, not that every source value is a reading: a logger can
+        write 163 for a temperature that never leaves 5-6, or -7.2E+08 when a
+        Modbus read fails, and both are below the 1e9 code cut-off
       * a timestamp the source holds more than once with DIFFERENT values in
         that column - there is no telling which is right
 
@@ -293,11 +299,13 @@ public static class PopulateCore
     // The value to put in one gap, from the source rows sharing its timestamp.
     // Columns are tried in order (the chosen one, then its proven
     // equivalents); the first that yields a usable reading decides. Returns
-    // { "ok", value } | { "missing", null } | { "conflict", null } - conflict
-    // when a repeated timestamp gives different readings.
-    public static string[] PickFill(System.Collections.IList rows, int[] cols, double[] skip)
+    // { "ok", value } | { "missing", null } | { "range", null } |
+    // { "conflict", null }. "range" when the only readings fall outside
+    // [lo, hi]; "conflict" when a repeated timestamp gives different readings.
+    public static string[] PickFill(System.Collections.IList rows, int[] cols, double[] skip, double lo, double hi)
     {
         var values = new List<string>();
+        bool outOfRange = false;
         foreach (int j in cols)
         {
             foreach (object o in rows)
@@ -307,13 +315,32 @@ public static class PopulateCore
                 string v = s[j].Trim();
                 double r = Reading(v);
                 if (double.IsNaN(r) || Array.IndexOf(skip, r) >= 0) continue;
+                if (r < lo || r > hi) { outOfRange = true; continue; }
                 if (!values.Contains(v)) values.Add(v);
             }
             if (values.Count > 0) break;
         }
-        if (values.Count == 0) return new string[] { "missing", null };
+        if (values.Count == 0) return new string[] { outOfRange ? "range" : "missing", null };
         if (values.Count > 1) return new string[] { "conflict", null };
         return new string[] { "ok", values[0] };
+    }
+
+    // The span a fill value must fall inside: the target column's own 1st to
+    // 99th percentile, widened by that spread again on each side (and by at
+    // least 10% of the value's size, for a column that barely moves).
+    // Percentiles, not min/max, so a few error codes already in the column
+    // cannot stretch it. { lo, hi }, or { -inf, +inf } with no readings.
+    public static double[] PlausibleRange(double[] values)
+    {
+        var v = new List<double>();
+        foreach (double x in values) if (!double.IsNaN(x)) v.Add(x);
+        if (v.Count == 0) return new double[] { double.NegativeInfinity, double.PositiveInfinity };
+        v.Sort();
+        double p01 = v[(int)Math.Floor(0.01 * (v.Count - 1))];
+        double p99 = v[(int)Math.Ceiling(0.99 * (v.Count - 1))];
+        double pad = Math.Max(p99 - p01, 0.1 * Math.Max(Math.Abs(p01), Math.Abs(p99)));
+        pad = Math.Max(pad, 1e-5);
+        return new double[] { p01 - pad, p99 + pad };
     }
 
     public static int DistinctCount(double[] values, int limit)
@@ -655,7 +682,7 @@ function Invoke-PopulateMissingData {
         SharedTimestamps = $shared.Count
         SourceOnlyTimestamps = @($sMap.Keys | Where-Object { -not $tMap.ContainsKey($_) }).Count
         Map = @(); RowsFilled = 0; FieldsFilled = 0
-        GapsNoSourceRow = 0; GapsSourceMissing = 0; GapsSourceConflict = 0; GapsUnmappedColumn = 0
+        GapsNoSourceRow = 0; GapsSourceMissing = 0; GapsOutOfRange = 0; GapsSourceConflict = 0; GapsUnmappedColumn = 0
         FirstFilled = $null; LastFilled = $null
         Lines = $target.Lines; Status = 'Ok'; Detail = ''
     }
@@ -681,9 +708,21 @@ function Invoke-PopulateMissingData {
     $fillCols = @{}
     foreach ($m in $mapped) { $fillCols[$m.Target] = [int[]](@($m.Source) + @($m.Alternates)) }
 
+    # Per mapped column: the span a fill must fall in, from the target's OWN
+    # readings in every row. Agreement proves the columns are the same
+    # measurement, but not that every source value is a reading - a CR6 can
+    # log 163 for a temperature or -7.2E+08 when a Modbus read fails, and
+    # those are below the 1e9 code cut-off.
+    $allTargetRows = [System.Collections.Generic.List[object]]::new()
+    foreach ($list in $tMap.Values) { foreach ($r in $list) { $allTargetRows.Add($r) } }
+    $ranges = @{}
+    foreach ($m in $mapped) {
+        $ranges[$m.Target] = [PopulateCore]::PlausibleRange((Get-ColumnReadings -Rows $allTargetRows -Index $m.Target))
+    }
+
     # Plain counters: properties on the record are slow to bump in a loop.
     $rowsFilled = 0; $fieldsFilled = 0
-    $noRow = 0; $noReading = 0; $conflict = 0; $unmappedGaps = 0
+    $noRow = 0; $noReading = 0; $outOfRange = 0; $conflict = 0; $unmappedGaps = 0
 
     $lines = [string[]]$target.Lines.Clone()
     for ($n = $target.DataStart; $n -lt $lines.Count; $n++) {
@@ -707,8 +746,10 @@ function Invoke-PopulateMissingData {
             if ($i -ge $f.Count -or -not [PopulateCore]::IsMissing($f[$i])) { continue }
             if (-not $sList) { $noRow++; continue }
 
-            $pick = [PopulateCore]::PickFill($sList, $fillCols[$i], $skipNumbers)
+            $rg = $ranges[$i]
+            $pick = [PopulateCore]::PickFill($sList, $fillCols[$i], $skipNumbers, $rg[0], $rg[1])
             if ($pick[0] -eq 'missing') { $noReading++; continue }
+            if ($pick[0] -eq 'range') { $outOfRange++; continue }
             if ($pick[0] -eq 'conflict') { $conflict++; continue }
 
             $f[$i] = $pick[1]
@@ -724,7 +765,7 @@ function Invoke-PopulateMissingData {
     }
     $rec.Lines = $lines
     $rec.RowsFilled = $rowsFilled; $rec.FieldsFilled = $fieldsFilled
-    $rec.GapsNoSourceRow = $noRow; $rec.GapsSourceMissing = $noReading
+    $rec.GapsNoSourceRow = $noRow; $rec.GapsSourceMissing = $noReading; $rec.GapsOutOfRange = $outOfRange
     $rec.GapsSourceConflict = $conflict; $rec.GapsUnmappedColumn = $unmappedGaps
     if ($mapped.Count -eq 0) {
         $rec.Status = 'NoColumns'
@@ -803,6 +844,7 @@ function Format-Summary {
     $out.Add('Gaps left as they are:')
     $out.Add("  no source row at that time:      $($Rec.GapsNoSourceRow)")
     $out.Add("  source has no usable reading:    $($Rec.GapsSourceMissing)")
+    $out.Add("  source value outside the column's range: $($Rec.GapsOutOfRange)")
     $out.Add("  source repeats the time, values differ: $($Rec.GapsSourceConflict)")
     $out.Add("  column not matched:              $($Rec.GapsUnmappedColumn)")
     $out.Add("Source timestamps not in target (not added): $($Rec.SourceOnlyTimestamps)")

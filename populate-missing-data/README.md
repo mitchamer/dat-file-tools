@@ -64,6 +64,7 @@ the report with the reason, and its gaps stay as they are.
 | `NAN` or empty in the source | there is nothing to copy |
 | `0.999998`, `-0.999998` (`-SkipSourceValues`) | the DT2485 sensor-error reading. It looks like a number, so it has to be named |
 | any magnitude of 1e9 or more | the `2147483647` / `2.147484E+09` family of "no reading" codes |
+| a value far outside the **target** column's own readings | matching proves two columns are the same measurement, not that every source value is a reading. Loggers write `163` for a temperature that never leaves 5–6, `0` for a failed axis read, or `-7.2E+08` when a Modbus read fails — all below the 1e9 cut-off. The limit is the column's 1st–99th percentile widened by that spread again on each side (at least 10% of the value), so seasonal swings and slow drift pass and the few error codes already in a column cannot stretch it |
 | a timestamp the source holds twice with **different** values in that column | there is no telling which is right (the same value twice is fine) |
 
 ## Before you run it
@@ -72,7 +73,7 @@ the report with the reason, and its gaps stay as they are.
   [Fix Timestamps](../fix-timestamps/) first if they are not. A file with no
   timestamps in common with the other is refused and nothing is written.
 - A DT2485's own download is not TOA5 — it has a 26-row DT2485 header. Convert
-  it first.
+  it first with [CSV to TOA5](../csv-to-toa5/) (right-click → **Convert to TOA5**).
 
 ## How to run it
 
@@ -120,10 +121,10 @@ path, which goes stale the moment the folder moves.
 .\test_populate.ps1
 ```
 
-36 checks: matching by values with different names and order, by name, the
+37 checks: matching by values with different names and order, by name, the
 Between rule and its limit, constant columns not taken as proof, ambiguity,
 full precision preferred and the fall-back copy used, every value that is never
-copied, repeated source timestamps, refusals, round-trip fidelity (BOM, LF,
+copied (including out-of-range readings), repeated source timestamps, refusals, round-trip fidelity (BOM, LF,
 quoting), and the script end to end (`-DryRun` writes nothing; a real run backs
 up, logs and fills). It loads the script's functions through the AST and opens
 no dialogs, so it runs unattended.
