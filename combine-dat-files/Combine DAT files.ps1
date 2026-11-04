@@ -1785,7 +1785,7 @@ function Add-Toa5SerialTableGroups {
         nothing collects into. Model, serial and table cannot tell those apart
         (they are identical by definition here), so exactly one name-shaped rule decides
         the ROLE, never the match: a file whose name ends in a download date
-        stamp (_YYYY-MM-DD, optionally with a time) is a download, and anything
+        stamp (_YYYY-MM-DD or _YYYY_MM_DD, optionally with a time) is a download, and anything
         else is a collected file.
 
           * exactly one collected file in the group -> it is the primary and
@@ -1961,6 +1961,9 @@ function Invoke-CombineForPrimary {
         is not approval, it is a queue. Anything that DOES differ still opens the
         window, and every other check - recency, column count, timestamp format -
         runs unchanged.
+
+        A secondary whose rows 1 and 2 are identical to the primary's, with the
+        primary newer on both recency counts, is merged without either dialog.
 
         With -DryRun nothing is written, moved or backed up and no dialog is
         shown: the two comparisons are made in code and reported, so the numbers
@@ -2170,11 +2173,17 @@ function Invoke-CombineForPrimary {
             $alignOffer = ($bits -join '; ') + '.'
         }
 
+        # Rows 1 and 2 identical and the primary newer on both counts: the two
+        # comparison dialogs would show nothing but green, so they are not
+        # shown. This is what lets a folder of a hundred scheduled downloads
+        # merge in one go. Any difference at all still opens the comparison.
+        $row2Same = ($primaryRow2 -eq $secondaryRow2)
+        $row1Same = ($originalHeader -eq $header2)
+        $exactMatch = $recency.Ok -and $row2Same -and $row1Same
+
         # A dry run decides nothing and shows nothing: the two comparisons the
         # dialogs would put to you are made in code and reported instead.
         if ($DryRun) {
-            $row2Same = ($primaryRow2 -eq $secondaryRow2)
-            $row1Same = ($originalHeader -eq $header2)
 
             if (-not $recency.Ok) {
                 Write-Host "  RECENCY CHECK FAILED: $($recency.Reason)" -ForegroundColor Yellow
@@ -2207,7 +2216,7 @@ function Invoke-CombineForPrimary {
             $filesProcessed++
 
             Write-Host "  WOULD MERGE: $secondaryName" -ForegroundColor Green
-            Write-Host "    row 2 matches$(if ($row1Same) { ', row 1 matches' } else { ', row 1 differs - a real run would ask about it' })" -ForegroundColor DarkGray
+            Write-Host "    row 2 matches$(if ($exactMatch) { ', row 1 matches - a real run merges it without asking' } elseif ($row1Same) { ', row 1 matches' } else { ', row 1 differs - a real run would ask about it' })" -ForegroundColor DarkGray
             Write-Host "    would add $wouldAdd new unique row(s); primary would hold $($currentData.Count)" -ForegroundColor DarkGray
             Write-Host "    would move to: $(Join-Path $backupFolder $secondaryName)" -ForegroundColor DarkGray
             $log.Add("  WOULD MERGE  $secondaryPath  -  read $($data2.Count), new $wouldAdd")
@@ -2257,6 +2266,10 @@ function Invoke-CombineForPrimary {
                 $result.Warnings.Add("'$secondaryName' not merged: $why")
                 continue
             }
+            $row2Choice = 'Proceed'
+        }
+        elseif ($exactMatch) {
+            Write-Host "Rows 1 and 2 match exactly and the primary is newer - merging $secondaryName without asking." -ForegroundColor Green
             $row2Choice = 'Proceed'
         }
         elseif ($AutoProceedOnHeaderMatch -and ($primaryRow2 -eq $secondaryRow2)) {

@@ -240,6 +240,13 @@ the three checks above, and the merge log:
 
 ## The comparison window
 
+**A secondary whose rows 1 and 2 are identical to the primary's, with the
+primary newer on both [recency](#the-recency-check--are-you-sure) counts, is
+merged without either window** — they would show nothing but green. A folder of a
+hundred scheduled downloads (`GK DAQ2_Status_2026_10_11_0204.dat`, …) then merges
+with one right-click on the folder. Any difference, in any field, still opens the
+comparison for that file. The merge log lists every file merged.
+
 Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
 Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
 mode, an exact row-2 match skips straight to step 2 — and if row 1 is identical

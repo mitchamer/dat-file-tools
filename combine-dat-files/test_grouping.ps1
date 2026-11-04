@@ -198,6 +198,27 @@ $results += Test-Case -Name 'non_toa5_ignored' -Build {
     Set-Content -Path (Join-Path $d 'Site_Table_2026-09-08.dat') -Value @('a,b', '3,4')
 } -Expected @{}
 
+# 10. Scheduled-task downloads stamped _YYYY_MM_DD_HHMM (the GK DAQ2 Status
+#     folder): all go into the collected file, oldest first, and order by date
+#     alongside a dash-stamped download.
+$results += Test-Case -Name 'underscore_stamp_with_time' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_12_0201.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_11_2004.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026-10-11.dat') 'GK DAQ2' '28193' 'Status'
+    New-Toa5 (Join-Path $d 'GK DAQ2_Status_2026_10_11_0204.dat') 'GK DAQ2' '28193' 'Status'
+} -Expected @{
+    'GK DAQ2_Status.dat' = 'GK DAQ2_Status_2026-10-11.dat,GK DAQ2_Status_2026_10_11_0204.dat,GK DAQ2_Status_2026_10_11_2004.dat,GK DAQ2_Status_2026_10_12_0201.dat'
+}
+
+# 11. Mixed separators in the date are not a stamp -> two collected files, refused.
+$results += Test-Case -Name 'mixed_separator_not_a_stamp' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'Site_Status.dat') 'Site' '1' 'Status'
+    New-Toa5 (Join-Path $d 'Site_Status_2026-10_11.dat') 'Site' '1' 'Status'
+} -Expected @{} -ExpectWarn
+
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 $failed = @($results | Where-Object { -not $_ }).Count
 Write-Host ""

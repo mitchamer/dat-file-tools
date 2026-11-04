@@ -126,6 +126,24 @@ Check 'the conflicting timestamp is named' (@($res.Warnings | Where-Object { $_ 
 $kept = @(Get-Content -LiteralPath $P | Select-Object -Skip 4 | Where-Object { $_ })
 Check 'both conflicting rows are kept' ($kept.Count -eq 3) $kept.Count
 
+Write-Host "`n=== identical rows 1 and 2 merge without a dialog; a difference still asks ===" -ForegroundColor Cyan
+$d = Case 'nodialog'
+$P = Join-Path $d 'GK DAQ2_Status.dat'
+$S1 = Join-Path $d 'GK DAQ2_Status_2026_10_11_0204.dat'
+$S2 = Join-Path $d 'GK DAQ2_Status_2026_10_11_0804.dat'
+$S3 = Join-Path $d 'GK DAQ2_Status_2026_10_11_1404.dat'
+New-File $P @((Row '2026-10-12 02:00:00' 3))
+New-File $S1 @((Row '2026-10-11 02:00:00' 0))
+New-File $S2 @((Row '2026-10-11 08:00:00' 1))
+# Same columns, a different program signature in row 1: worth a look.
+New-File $S3 @((Row '2026-10-11 14:00:00' 2)) (@($ENVROW -replace '"12074"', '"99999"') + $HDR[1..3])
+$script:dialogs = @()
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) $script:dialogs += $SecondaryName; return 'Proceed' }
+$res = Invoke-CombineForPrimary -PrimaryPath $P -SecondaryPaths @($S1, $S2, $S3) -SpecialRowCount 3 -AutoProceedOnHeaderMatch
+Check 'all three merged' ($res.FilesProcessed -eq 3) $res.FilesProcessed
+Check 'only the file whose row 1 differs opened a dialog' (($script:dialogs | Sort-Object -Unique) -join ',' -eq (Split-Path -Leaf $S3)) ($script:dialogs -join ',')
+function Show-HeaderComparison { param($PrimaryHeader, $SecondaryHeader, $PrimaryName, $SecondaryName, $RowNumber, $ComparisonTitle, $AlignOffer, $AlignBlockedReason) return 'Proceed' }
+
 Write-Host ''
 if ($fail -eq 0) { Write-Host "All checks passed." -ForegroundColor Green }
 else { Write-Host "$fail check(s) FAILED." -ForegroundColor Red }
