@@ -134,9 +134,8 @@ cleanly, so a leftover note always means a live question.
 
 ### Right-click (the folder you are looking at, nothing deeper)
 
-```powershell
-.\Install-ContextMenu.ps1          # per-user, no admin
-```
+Run `Install-ContextMenu.ps1` at the top of the repo (every tool, per-user, no
+admin), or this folder's own `Install-ContextMenu.ps1` for just this tool.
 
 Two entries appear on a folder, and on the empty space inside one:
 
@@ -145,9 +144,6 @@ Two entries appear on a folder, and on the empty space inside one:
 
 Both pass only the folder, so the scan is **that folder alone** — subfolders are
 never entered from the menu. `.\Uninstall-ContextMenu.ps1` removes them.
-
-There is deliberately no `.reg` file: it would have to hard-code the path, which
-goes stale the moment the folder moves.
 
 ### Terminal (where `-Depth` lives)
 

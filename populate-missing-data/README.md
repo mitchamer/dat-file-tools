@@ -80,9 +80,8 @@ the report with the reason, and its gaps stay as they are.
 
 ### Right-click
 
-```powershell
-.\Install-ContextMenu.ps1          # per-user, no admin
-```
+Run `Install-ContextMenu.ps1` at the top of the repo (every tool, per-user, no
+admin), or this folder's own `Install-ContextMenu.ps1` for just this tool.
 
 Two entries appear on `.dat` and `.csv` files. On Windows 11 they are under
 **Show more options**.
@@ -92,8 +91,7 @@ Two entries appear on `.dat` and `.csv` files. On Windows 11 they are under
 - **Check Populate Missing Data (no changes)** — the same with `-DryRun`
 
 Right-click the file **with the gaps**. `.\Uninstall-ContextMenu.ps1` removes the
-entries. There is deliberately no `.reg` file: it would have to hard-code the
-path, which goes stale the moment the folder moves.
+entries.
 
 ### Terminal
 

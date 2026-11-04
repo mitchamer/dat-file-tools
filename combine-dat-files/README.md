@@ -13,8 +13,6 @@ headers disagree.
 
 Windows PowerShell 5.1+ (7 works). Windows only.
 
-> Merged from the former `README.txt` and `SCRIPT_README.txt`, which overlapped.
-
 ## Combine Affinity Files
 
 `Combine Affinity Files.ps1` in this folder is a sibling, not a replacement. It
@@ -101,15 +99,10 @@ directly. This is what the right-click entries use.
 
 ## Right-click menu
 
-No administrator rights needed — registers for the current user, based on wherever
-this folder lives:
-
-```powershell
-.\Install-ContextMenu.ps1          # add
-.\Uninstall-ContextMenu.ps1        # remove
-```
-
-Add `-AllUsers` to either, from an elevated prompt, to apply machine-wide.
+Run `Install-ContextMenu.ps1` at the top of the repo — it installs every
+tool's entries at once, per-user, no admin. This folder's own
+`Install-ContextMenu.ps1` / `Uninstall-ContextMenu.ps1` add or remove just this
+tool's. `-AllUsers`, from an elevated prompt, applies machine-wide.
 
 You get three entries, each with the merge icon: on a **file** (becomes the
 primary), on a **folder** (scans it), and on a **folder background** (scans the
@@ -121,12 +114,8 @@ down from one master, so the 16 px version Explorer actually uses stays crisp, a
 it uses a mid blue that reads on both light and dark menus. If the `.ico` is
 missing the entries still register, just without an icon.
 
-> If you move this folder, re-run `Install-ContextMenu.ps1` — the registered
-> command records the path it was installed from.
-
-The `.reg` files do the same under `HKEY_CLASSES_ROOT`, but need admin **and**
-contain a hard-coded path you must edit first. The PowerShell installer is
-preferred.
+> If you move this folder, re-run the installer — the registered command
+> records the path it was installed from.
 
 ## What it expects
 
@@ -240,25 +229,20 @@ the three checks above, and the merge log:
 
 ## The comparison window
 
+Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
+Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
+mode, an exact row-2 match skips straight to step 2.
+
 **A secondary whose rows 1 and 2 are identical to the primary's, with the
 primary newer on both [recency](#the-recency-check--are-you-sure) counts, is
 merged without either window** — they would show nothing but green. A folder of a
 hundred scheduled downloads (`GK DAQ2_Status_2026_10_11_0204.dat`, …) then merges
-with one right-click on the folder. Any difference, in any field, still opens the
-comparison for that file. The merge log lists every file merged.
-
-Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
-Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
-mode, an exact row-2 match skips straight to step 2 — and if row 1 is identical
-too, **neither window opens**: the file merges with a console line instead.
-
-Both windows exist to show you a difference. When rows 1 and 2 are byte-identical
-there is none, and one group can hold a hundred collections of a single table, so
-a window per file is two hundred OK clicks that approve nothing. Anything that
-*does* differ still opens the window, and every other check is unchanged —
-recency, column count, timestamp format and the re-order statistics all still
-stop the merge and ask. Run `-DryRun` first on a folder you have not merged
-before; that is the pass that shows you the whole plan at once.
+with one right-click on the folder, a console line per file. Any difference, in
+any field, still opens the comparison for that file, and every other check —
+recency, column count, timestamp format, the re-order statistics — still stops
+the merge and asks. The merge log lists every file merged. Run `-DryRun` first
+on a folder you have not merged before; that is the pass that shows you the
+whole plan at once.
 
 Columns: `# | Primary | Secondary | Status`. On row 1 a **Meaning** column is
 inserted, using the same names ViewPro shows for the TOA5 environment line:
@@ -489,33 +473,12 @@ raised. A dry run writes no log, because it writes nothing at all.
 
 ## Speed, and what to do while it runs
 
-A 55 MB merge used to take over five minutes. Measured on 38,000 rows of a
-275-column SAA table:
+Reading, sorting and de-duplicating 38,000 rows of a 275-column SAA table takes
+well under a second locally. Rows are sorted with an ordinal comparer on the
+whole row, so rows sharing a timestamp are ordered deterministically.
 
-| Phase | Before | After |
-|---|---|---|
-| read a 38 MB file | 0.80 s (`Get-Content`) | 0.40 s (`ReadAllLines`) |
-| sort 38,000 rows | 2.40 s | **0.09 s** |
-| everything else per phase | — | under 0.1 s |
-
-The sort was the hot spot. It was:
-
-```powershell
-$currentData | Sort-Object { ($_ -split ',')[0] }
-```
-
-which split each row into all 275 of its fields to read the first one, and paid
-PowerShell pipeline overhead on every comparison. It is now a single
-`[Array]::Sort` with an ordinal comparer — 26× faster, and deterministic, because
-rows sharing a timestamp are now ordered by the rest of the row instead of
-arbitrarily.
-
-**On a network share, the writing dominates.** These files usually live on a UNC
-path, and the output is now written through a 1 MB buffer. `StreamWriter`'s
-default buffer is a few KB — smaller than one SAA row — which would make every
-row its own SMB round-trip. Batching turns ~38,000 round-trips into ~50.
-
-If a merge is still slow, the remaining cost is the link itself: a 55 MB merge
+**On a network share, the link dominates.** Output is written through a 1 MB
+buffer so each row is not its own SMB round-trip, but a 55 MB merge
 reads ~105 MB and writes ~50 MB. Copying the folder to a local disk, merging
 there, and copying back is often faster than merging in place over a VPN. To see
 what you are working with:
@@ -539,47 +502,15 @@ That is the real working file. The output is streamed into
 
 - refreshing Explorer (F5) shows **the temp file** growing — the primary does not
   change size until the merge completes
-- closing the window part-way leaves the primary **untouched**, which was not true
-  before: an interrupted write used to truncate it
+- closing the window part-way leaves the primary **untouched**
 
-### Fixed: merging used to make LoggerNet abandon the file
+## Encoding
 
-Earlier versions defaulted to `-Encoding UTF8` via `Set-Content`, which **under
-PowerShell 5.1 writes a byte-order mark** (PowerShell 7 does not). A BOM sits
-ahead of the TOA5 row, so LoggerNet could no longer recognise the data file it was
-appending to — it renamed the file to `.dat.backup` and started a fresh one.
-
-The result was quietly bad: the merge itself succeeded, but LoggerNet stopped
-using the merged file, collection restarted from zero, and the merged history was
-left orphaned in a `.backup` nobody was looking at.
-
-`Auto` fixes this by writing the file back the way it was found. LoggerNet data
-files have no BOM, so none is added. `test_encoding.ps1` covers it:
-
-```powershell
-.\test_encoding.ps1
-```
-
-**If this already happened to you**, the symptom is a large `.dat.backup` beside a
-small, recently-started `.dat`, and the `.backup` begins with the bytes
-`EF BB BF`. To check and recover:
-
-```powershell
-# does the backup carry a BOM?
-$f = 'X_DATA.dat.backup'
-$b = New-Object byte[] 3
-$s = [IO.File]::OpenRead($f); $null = $s.Read($b,0,3); $s.Dispose()
-'{0:X2} {1:X2} {2:X2}' -f $b[0],$b[1],$b[2]     # EF BB BF means yes
-
-# strip it, then merge the backup into the live .dat with this fixed version
-$lines = [string[]](Get-Content -LiteralPath $f)
-[IO.File]::WriteAllLines($f, $lines, (New-Object Text.UTF8Encoding($false)))
-```
-
-Then run the combine tool with the **live `.dat` as the primary** and the
-`.backup` as the secondary, so the result stays in the file LoggerNet is
-collecting into. Do it between collections, or with LoggerNet's collection for
-that station paused.
+The default `-Encoding Auto` writes the primary back with the byte-order mark it
+arrived with. LoggerNet data files have none, and this matters: a BOM ahead of
+the TOA5 row stops LoggerNet recognising the file it appends to, so it renames
+it to `.dat.backup` and starts a fresh one. Avoid `UTF8BOM` on LoggerNet files.
+`test_encoding.ps1` covers it.
 
 With `-Encoding ASCII`, the primary and each secondary are scanned for non-ASCII
 characters; if any are found the line numbers are reported and you choose whether

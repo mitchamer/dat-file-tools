@@ -20,8 +20,9 @@ Windows Forms dialogs.
 
 ## ⚠ Use at your own risk
 
-**Combine DAT files and Decimate rewrite data files in place. Combine Affinity
-Files writes a new file and leaves sources alone unless you pass `-MoveSources`.**
+**Combine DAT files, Decimate, Fix Timestamps and Populate Missing Data rewrite
+data files in place. Combine Affinity Files and CSV to TOA5 write a new file and
+leave sources alone (Affinity moves them only with `-MoveSources`).**
 Run them on copies until you trust them, and keep independent backups of anything
 you cannot regenerate.
 
@@ -52,8 +53,8 @@ Clone or download, then:
 # merge a folder's duplicates, approving each header comparison
 .\combine-dat-files\'Combine DAT files.ps1'
 
-# optional: add Explorer right-click entries for it (per-user, no admin)
-.\combine-dat-files\Install-ContextMenu.ps1
+# optional: add Explorer right-click entries for every tool (per-user, no admin)
+.\Install-ContextMenu.ps1
 
 # recursive combine of a download tree (writes Combined\, does not touch sources)
 .\combine-dat-files\'Combine Affinity Files.ps1' 'C:\Data\affinity'
@@ -88,9 +89,15 @@ csv-to-toa5/          the download-to-TOA5 converter, its context-menu installer
 populate-missing-data/  the gap filler, its context-menu installer, tests and docs
 ```
 
-Each folder is self-contained — copy just the one you need. `combine-dat-files`
-and `fix-timestamps` each carry their own context-menu installer, and each
-resolves the script beside it, so they keep working wherever the folder lives.
+Each folder is self-contained — copy just the one you need. Every tool except
+Decimate carries its own context-menu installer, and each resolves the script
+beside it, so they keep working wherever the folder lives.
+
+`Install-ContextMenu.ps1` at the top level is the one installer to use: it
+removes every entry the tools have registered (including ones left pointing at
+an old copy of the folder), then installs them all fresh from here. `-AllUsers`
+passes through. Re-run it after moving or updating the folder.
+`Uninstall-ContextMenu.ps1` removes them all.
 
 **Order of operations:** if a folder's timestamps are not already
 `YYYY-MM-DD HH:MM:SS`, run **Fix Timestamps** before combining or decimating.

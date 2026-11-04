@@ -18,7 +18,7 @@ warranty — see [LICENSE](../LICENSE) sections 15–17.
 
 - **Rows must land on the interval.** Hourly keeps rows at `HH:00` with seconds
   zero. Data logged at `:05` or `:07` matches nothing, so thinning would leave no
-  data. **v3 refuses to write in that case** and names the cause; `-Force`
+  data. **It refuses to write in that case** and names the cause; `-Force`
   overrides. Still worth knowing your logging offset before you start.
 - **The original filename is kept**, so a thinned file looks identical to a full
   one. The full copy is `Backup\<name>_fulldataset<ext>`.
@@ -77,8 +77,8 @@ Fields: `Path`, `Mode`, `RowsIn`, `RowsKept`, `RowsDropped`, `Unparseable`,
 | `-Force` | Allow emptying a file, and allow files inside `Backup\` |
 | `-WhatIf` / `-Confirm` | Standard PowerShell |
 
-The v2 names `-ModeParam`, `-RetainParam` and `-FilesParam` still work as aliases,
-so existing scheduled calls keep running.
+`-ModeParam`, `-RetainParam` and `-FilesParam` are accepted as aliases, so older
+scheduled calls keep running.
 
 ## What it keeps
 
@@ -115,44 +115,8 @@ a later unreadable row counts as bad data rather than a header.
 .\test_decimate.ps1
 ```
 
-12 cases, 34 assertions, covering what the review turned on: aligned data,
-fractional-second timestamps, off-interval data being refused, `-Force` overriding
-that, files with no timestamps, `RetainFirst`, `-WhatIf` leaving nothing behind,
-files inside `Backup`, BOM preservation both ways, wildcards, the v2 aliases, and
+12 cases, 34 assertions: aligned data, fractional-second timestamps,
+off-interval data being refused, `-Force` overriding that, files with no
+timestamps, `RetainFirst`, `-WhatIf` leaving nothing behind, files inside
+`Backup`, BOM preservation both ways, wildcards, the parameter aliases, and
 unreadable rows surviving.
-
-## What changed in v3
-
-v3 is a reviewed rewrite. Two ways v2 could destroy data without warning are now
-blocked by default, and behaviour that was silent is now reported.
-
-### Correctness
-
-| | |
-|---|---|
-| **Timestamps** | v2 parsed only `yyyy-MM-dd HH:mm:ss`. TOA5 output routinely carries fractional seconds, which v2 could not parse **at all** — it treated every row as unreadable, kept them, and reported success having changed nothing. v3 accepts fractional seconds, minute precision and the ISO `T` separator |
-| **Refuses to empty a file** | Data at `:07` against `Hourly` matches nothing; v2 wrote out headers with no data. v3 detects this before writing and refuses |
-| **Refuses files inside `Backup\`** | v2 correctly skipped making a backup for these, but still overwrote them — destroying the only full copy |
-| **No silent no-op** | If nothing parses as a timestamp, v3 skips and reports the expected formats. v2 assumed two header rows and rewrote the file unchanged |
-| **Header detection** | v2 forced a minimum of two header rows, so a headerless CSV lost its first two data rows into the header block. v3 counts the actual leading non-timestamp rows, which may be zero |
-| **Encoding** | v2 always wrote `UTF8`, which under PowerShell 5.1 means UTF8 **with** a BOM — files silently gained one, and behaviour differed between 5.1 and 7. v3 defaults to `Auto` and preserves what came in |
-| **Memory** | v2 read the whole file with `Get-Content`. Since the reason to decimate is that a file is large, v3 streams input and writes as it goes |
-| **Warning flood** | v2 emitted one warning per unreadable row — thousands on a wrong-format file. v3 reports a count with a sample |
-
-### Interface
-
-- **Preview before writing**, the main change. v2 wrote first and reported after,
-  so "0 rows kept" arrived too late to act on.
-- **A settings dialog** replaces two `Read-Host` prompts, which appeared in a
-  console window that flashes past when launched from Explorer.
-- `Proceed` / `Skip file` / `Exit all`, matching the combine tool.
-- `-WhatIf` and `-Confirm`; wildcard `-Path` with missing paths reported;
-  `Write-Progress` across files; a summary object per file; ASCII console output
-  instead of emoji.
-
-### Two bugs the tests caught that review had not
-
-- `ConfirmImpact='High'` made every run prompt, which **throws** under
-  `-NonInteractive` — it would have broken scheduled use outright.
-- `-WhatIf` propagates into called cmdlets, so the temp-file cleanup skipped
-  itself and left `.tmp` files behind.
