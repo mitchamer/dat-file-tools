@@ -168,6 +168,7 @@ collections, renamed files, `(1)` copies:
 ```
 18421_SAA_SAA1_DATA_2026-09-08.dat   ->  18421_SAA1_DATA.dat
 13910_Status_2026-07-23T15-44.dat    ->  TM_MCL-02_Status.dat
+GK DAQ2_Status_2026_10_08_0201.dat   ->  GK DAQ2_Status.dat
 SAA1_DATA (1).dat                    ->  18421_SAA1_DATA.dat
 ```
 
@@ -182,19 +183,51 @@ the logger software keeps appending to, or the merged rows end up in a file
 nothing collects into. So exactly one name-shaped rule decides the *role* —
 never the match:
 
-- a name ending in a date stamp — `_YYYY-MM-DD` or `_YYYY_MM_DD`, optionally
-  with a time (`_2026-09-08T15-44`, `_2026-09-08T15-44-30`, `_2026-09-08_15-44`,
-  `_2026_10_11_0204`) — is a **download**; anything else is the **collected file**.
-  Downloads merge in date order whichever separator their stamp uses
+- a name ending in a date stamp is a **download**; anything else is the
+  **collected file**. The date may use `-` or `_`, the time is optional and may
+  be separated or run together, and a trailing `_N` is LoggerNet's counter for
+  two collections in the same minute — `_2026-09-08`, `_2026-09-08T15-44`,
+  `_2026-09-08T15-44-30`, `_2026-09-08_15-44`, `_2026_10_08_0201` and
+  `_2026_10_08_0201_1` are all stamps
 - one collected file in the group → it is the primary, and the dated downloads
   merge into it oldest stamp first
 - two or more files that could each be the collected file → **reported and
   skipped**, never merged into a guess
-- dated downloads only, no collected file → **reported and skipped**; which one
-  should become the archive is your call, so merge those manually
+- dated downloads only, no collected file → **reported and skipped**; see below
 
 Skipped groups are named in the console window, with the files that made them
 ambiguous.
+
+### When there is no collected file at all
+
+A logger set to start a **new file** per collection, rather than append, leaves
+a folder of nothing but dated downloads and nothing to merge into:
+
+```
+GK DAQ2_Status_2026_10_07_2001.dat
+GK DAQ2_Status_2026_10_08_0201.dat
+GK DAQ2_Status_2026_10_08_0801.dat
+... 90 more, one row each
+```
+
+These are **reported and skipped**. Merging them into one of the downloads would
+leave the whole record in a file whose name carries a `_YYYY_MM_DD_HHMM` suffix —
+a file nothing collects into — and the next collection would start yet another
+new file, so the pile rebuilds. That is a short-term fix, and the tool does not
+make it.
+
+The fix is at the logger: set its collection back to appending so LoggerNet keeps
+one file. The warning names the file that will appear when you do:
+
+```
+WARNING: Skipped model CR6, serial 28193, table 'Status' (.dat): every file is a
+dated download and none is the collected file (...). Set the logger's collection
+back to append so it keeps one file - 'GK DAQ2_Status.dat' is the name LoggerNet
+uses - then run this again and these will merge into it.
+```
+
+Once that file exists, the whole pile merges into it on the next run, oldest
+stamp first, and the downloads move to `Backup` as in any other group.
 
 `test_grouping.ps1` covers the grouping rules — the folder layouts that match,
 and the ambiguous ones that are refused. `test_validation.ps1` covers `-DryRun`,
@@ -216,7 +249,16 @@ comparison for that file. The merge log lists every file merged.
 
 Titled either *Step 1 of 2: Header Row Comparison* (row 2) or *Step 2 of 2: File
 Info Comparison* (row 1). Step 2 only appears if step 1 is approved. In folder
-mode, an exact row-2 match skips straight to step 2.
+mode, an exact row-2 match skips straight to step 2 — and if row 1 is identical
+too, **neither window opens**: the file merges with a console line instead.
+
+Both windows exist to show you a difference. When rows 1 and 2 are byte-identical
+there is none, and one group can hold a hundred collections of a single table, so
+a window per file is two hundred OK clicks that approve nothing. Anything that
+*does* differ still opens the window, and every other check is unchanged —
+recency, column count, timestamp format and the re-order statistics all still
+stop the merge and ask. Run `-DryRun` first on a folder you have not merged
+before; that is the pass that shows you the whole plan at once.
 
 Columns: `# | Primary | Secondary | Status`. On row 1 a **Meaning** column is
 inserted, using the same names ViewPro shows for the TOA5 environment line:
