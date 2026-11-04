@@ -65,9 +65,8 @@ prompt, or pass `-Force` from the terminal.
 
 ### Right-click
 
-```powershell
-.\Install-ContextMenu.ps1          # per-user, no admin
-```
+Run `Install-ContextMenu.ps1` at the top of the repo (every tool, per-user, no
+admin), or this folder's own `Install-ContextMenu.ps1` for just this tool.
 
 **Convert to TOA5** appears on `.csv`, `.dat` and `.txt` files. On Windows 11
 it is under **Show more options**. `.\Uninstall-ContextMenu.ps1` removes it.
