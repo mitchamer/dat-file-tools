@@ -102,7 +102,9 @@
     merging it into the primary puts the combined result somewhere nothing
     collects into. The script says which check failed and asks "are you sure?",
     defaulting to No. Answering Yes merges anyway and records the override in the
-    merge log.
+    merge log. It is NOT asked when the secondary's name ends in a download date
+    stamp and the primary's does not - the names already give the roles, and a
+    later download is expected to be newer. Logged, and alignment stays blocked.
 
     The primary's modified time and last timestamp are read ONCE, before the
     first merge. Re-reading them per secondary would be meaningless: the first
@@ -1686,6 +1688,15 @@ function Get-Toa5EnvironmentFields {
     return $fields
 }
 
+# A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
+# _2026_10_07_2001, and the underscore / dotted-time variants LoggerNet produces
+# for automatic collection, local manual downloads and remote manual collections.
+# The date separator is - or _, the time separator is optional (LoggerNet writes
+# a bare HHmm), and a trailing _N is the counter LoggerNet adds when two
+# collections land in the same minute. Matched against the name WITHOUT extension.
+# A function, not a variable, because the tests load functions only.
+function Get-StampSuffixPattern { '_(?<stamp>\d{4}[-_]\d{2}[-_]\d{2}(?:[T_]\d{2}[-._]?\d{2}(?:[-._]?\d{2})?)?)(?:_(?<seq>\d+))?$' }
+
 function Get-DuplicateGroups {
     <#
         Scans the TOP LEVEL of a folder only (subfolders are never entered) and
@@ -1811,13 +1822,7 @@ function Add-Toa5SerialTableGroups {
         [Parameter(Mandatory)][string]$DataExt
     )
 
-    # A trailing download stamp: _2026-09-08, _2026-09-08T15-44, _2026-09-08T15-44-30,
-    # _2026_10_07_2001, and the underscore / dotted-time variants LoggerNet produces
-    # for automatic collection, local manual downloads and remote manual collections.
-    # The date separator is - or _, the time separator is optional (LoggerNet writes
-    # a bare HHmm), and a trailing _N is the counter LoggerNet adds when two
-    # collections land in the same minute.
-    $stampSuffix = '_(?<stamp>\d{4}[-_]\d{2}[-_]\d{2}(?:[T_]\d{2}[-._]?\d{2}(?:[-._]?\d{2})?)?)(?:_(?<seq>\d+))?$'
+    $stampSuffix = Get-StampSuffixPattern
 
     # Every top-level data file that actually carries a TOA5 row 1. Row 1 is read
     # once per file - these folders often live on a slow network share.
@@ -2232,6 +2237,15 @@ function Invoke-CombineForPrimary {
             # downstream software reads, which is this check the wrong way round.
             Write-Host "  Secondary is newer than the primary - expected when appending. $($recency.Reason)" -ForegroundColor DarkGray
             $log.Add("  RECENCY  $secondaryPath  -  $($recency.Reason) - unattended append")
+        }
+        elseif (-not $recency.Ok -and
+                [System.IO.Path]::GetFileNameWithoutExtension($secondaryPath) -match (Get-StampSuffixPattern) -and
+                [System.IO.Path]::GetFileNameWithoutExtension($PrimaryPath) -notmatch (Get-StampSuffixPattern)) {
+            # The names already say which is which: a dated download going into the
+            # undated collected file. A download taken after the last collection is
+            # SUPPOSED to be newer, so asking is noise. Logged, not asked.
+            Write-Host "  Dated download is newer than the primary - expected. $($recency.Reason)" -ForegroundColor DarkGray
+            $log.Add("  RECENCY  $secondaryPath  -  $($recency.Reason) - dated download, not asked")
         }
         elseif (-not $recency.Ok) {
             $msg = "'$secondaryName' is not older than the primary - $($recency.Reason)"

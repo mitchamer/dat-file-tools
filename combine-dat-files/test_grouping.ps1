@@ -6,7 +6,7 @@
 $ErrorActionPreference = 'Stop'
 $src = Join-Path $PSScriptRoot 'Combine DAT files.ps1'
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($src, [ref]$null, [ref]$null)
-$want = 'Split-CsvLine','Get-Toa5EnvironmentFields','Get-DuplicateGroups','Add-Toa5SerialTableGroups'
+$want = 'Split-CsvLine','Get-Toa5EnvironmentFields','Get-DuplicateGroups','Add-Toa5SerialTableGroups','Get-StampSuffixPattern'
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     if ($want -contains $fn.Name) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }

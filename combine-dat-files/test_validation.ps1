@@ -8,7 +8,7 @@ $ast = [System.Management.Automation.Language.Parser]::ParseFile($src, [ref]$nul
 $want = 'Split-CsvLine', 'Get-FirstFieldRaw', 'Read-DataFileLines', 'Get-SortedDataRows',
         'Get-FileBomEncoding', 'Resolve-OutputEncoding', 'Start-MergeTimer', 'Show-SlowHintIfNeeded',
         'Backup-File', 'Test-NonAsciiCharacters', 'Invoke-CombineForPrimary',
-        'Split-CsvFieldsRaw', 'Get-LastDataTimestamp', 'Test-PrimaryIsNewer',
+        'Split-CsvFieldsRaw', 'Get-LastDataTimestamp', 'Test-PrimaryIsNewer', 'Get-StampSuffixPattern',
         'Get-ColumnAlignment', 'ConvertTo-AlignedRow', 'Get-ColumnStats', 'Get-ColumnStatsTable'
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     if ($want -contains $fn.Name) { . ([scriptblock]::Create($fn.Extent.Text)) }
