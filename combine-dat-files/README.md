@@ -295,6 +295,12 @@ next collection will not find it.
 The script names the failing check and asks **"are you sure?"**, defaulting to
 **No**. Answering Yes merges anyway and records the override in the merge log.
 
+**Not asked** when the secondary's name ends in a download date stamp
+(`_2026-11-12T12-27`) and the primary's does not: the names already say which is
+the download and which is the collected file, and a download taken after the last
+collection is *supposed* to be newer. The failure is still written to the merge
+log. Column alignment stays blocked in that case.
+
 > The primary's modified time and last timestamp are read **once**, before the
 > first secondary. Re-reading them per file would be meaningless — the first
 > merge rewrites the primary, so its modified time becomes "just now".

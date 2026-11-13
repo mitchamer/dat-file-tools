@@ -16,7 +16,7 @@ $want = 'Split-CsvLine', 'Split-CsvFieldsRaw', 'Get-FirstFieldRaw', 'Read-DataFi
         'Get-Toa5EnvironmentFields', 'Get-DuplicateGroups', 'Add-Toa5SerialTableGroups',
         'Get-LastDataTimestamp', 'Test-PrimaryIsNewer', 'Get-ColumnAlignment',
         'ConvertTo-AlignedRow', 'Get-ColumnStats', 'Get-ColumnStatsTable',
-        'Invoke-CombineForPrimary'
+        'Invoke-CombineForPrimary', 'Get-StampSuffixPattern'
 foreach ($fn in $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) {
     if ($want -contains $fn.Name) { . ([scriptblock]::Create($fn.Extent.Text)) }
 }
@@ -299,6 +299,30 @@ Check 'blocked-align Proceed merges nothing' ($res.FilesProcessed -eq 0) $res.Fi
 Check 'blocked-align Proceed leaves the primary byte-identical' ((Get-Content -LiteralPath $P -Raw) -eq $before) 'primary changed'
 Check 'blocked-align Proceed leaves the secondary in place' (Test-Path $S) 'secondary moved'
 Check 'align was blocked, not offered' ($null -eq $script:lastOffer -and $script:lastBlocked -match 'not newer') "$script:lastOffer / $script:lastBlocked"
+
+# ---------------------------------------------------------------------------
+Write-Host "`n=== 9. a newer DATED download into the undated file is not asked about ===" -ForegroundColor Cyan
+Reset
+$d = Case 'dated-newer'
+$P = Join-Path $d 'X_cell_diag.dat'
+$S = Join-Path $d 'X_cell_diag_2026-11-12T12-27.dat'
+New-File $P @('TIMESTAMP', 'A') @('"2026-01-01 00:00:00",1')
+New-File $S @('TIMESTAMP', 'A') @('"2026-11-12 12:00:00",2')
+$script:recencyAnswer = $false   # would decline if asked
+$res = Invoke-CombineForPrimary -PrimaryPath $P -SecondaryPaths @($S) -SpecialRowCount 3
+Check 'no recency prompt for a dated secondary' ($null -eq $script:recencyAsked) $script:recencyAsked
+Check 'dated secondary merged' ($res.FilesProcessed -eq 1) $res.FilesProcessed
+
+# Both dated: the names no longer say which is the collected file, so ask.
+Reset
+$d = Case 'both-dated'
+$P = Join-Path $d 'X_cell_diag_2026-01-01.dat'
+$S = Join-Path $d 'X_cell_diag_2026-11-12.dat'
+New-File $P @('TIMESTAMP', 'A') @('"2026-01-01 00:00:00",1')
+New-File $S @('TIMESTAMP', 'A') @('"2026-11-12 12:00:00",2')
+$script:recencyAnswer = $false
+$res = Invoke-CombineForPrimary -PrimaryPath $P -SecondaryPaths @($S) -SpecialRowCount 3
+Check 'dated primary: still asked' ($null -ne $script:recencyAsked) 'not asked'
 
 } finally {
     if (Test-Path $root) { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
