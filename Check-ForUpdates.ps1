@@ -3,18 +3,25 @@
     --------------------
     Is this copy of dat-file-tools behind GitHub, and if so, update it.
 
-    This folder is a git clone, and the right-click entries run the scripts in
-    it directly, so a clone nobody pulls keeps running old code without saying
-    so. Every tool calls this at start-up (at most once a day, see -Daily), and
-    the launcher calls it every time it opens.
+    The right-click entries run the scripts in this folder directly, so a copy
+    nobody updates keeps running old code without saying so. Every tool calls
+    this at start-up (at most once a day, see -Daily), and the launcher calls
+    it every time it opens.
 
-    It never overwrites anything: the update is `git pull --ff-only`, and it is
-    refused - with the reason - when the folder has local edits or is not on
-    main. With no git, no clone, or no network (fetch is given a few seconds),
-    it says nothing and the tool runs as it is.
+    Two kinds of copy, two ways to update:
 
-    When an update changes a context-menu installer, the entries are
-    reinstalled so they match.
+      A git clone: `git pull --ff-only`, refused - with the reason - when the
+      folder has local edits or is not on main. Never overwrites anything.
+
+      Anything else (a zip download, no git installed): asks the GitHub API
+      for the latest commit, compares it with the .version file this script
+      writes, and updates by downloading that commit's zip and copying it over
+      the folder. Edits to the tool files are overwritten; data files are not
+      touched. Needs no git, no admin and no sign-in - the repo is public.
+
+    With no network (a few seconds are allowed), it says nothing and the tool
+    runs as it is. After an update that may have changed them, the right-click
+    entries are reinstalled so they match.
 
     Returns one object: Status = UpToDate | Behind | Updated | Skipped | Failed,
     plus Behind (count), Commits (one line each) and Reason.
@@ -39,6 +46,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 $branch = 'main'
+$repo = 'mitchamer/dat-file-tools'
+$versionFile = Join-Path $root '.version'
+$isClone = Test-Path -LiteralPath (Join-Path $root '.git')
 
 function New-Result([string]$Status, [string]$Reason = '', [int]$Behind = 0, [string[]]$Commits = @()) {
     [pscustomobject]@{ Status = $Status; Reason = $Reason; Behind = $Behind; Commits = $Commits }
@@ -71,9 +81,65 @@ function Invoke-Git([string[]]$GitArgs, [int]$Timeout = $TimeoutSeconds) {
     $out.Result.Trim()
 }
 
+function Invoke-Reinstall {
+    try {
+        $null = & (Join-Path $root 'Install-ContextMenu.ps1') *>&1
+        'Right-click entries reinstalled.'
+    }
+    catch { "Reinstalling the right-click entries failed: $($_.Exception.Message). Run Install-ContextMenu.ps1." }
+}
+
+# ---------------- not a clone: GitHub API + zip download ----------------
+
+function Invoke-GitHubApi([string]$Path) {
+    # Windows PowerShell 5.1 does not offer TLS 1.2 by default; GitHub requires it.
+    [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/$Path" -UseBasicParsing -TimeoutSec $TimeoutSeconds
+}
+
+function Get-WebUpdateStatus {
+    try { $latest = (Invoke-GitHubApi "commits/$branch").sha }
+    catch { return New-Result Skipped "could not reach GitHub ($($_.Exception.Message))" }
+    $current = if (Test-Path -LiteralPath $versionFile) { (Get-Content -LiteralPath $versionFile -Raw).Trim() }
+    if ($current -eq $latest) { return New-Result UpToDate }
+    if ($current) {
+        try {
+            $cmp = Invoke-GitHubApi "compare/$current...$latest"
+            $log = @($cmp.commits | ForEach-Object { ($_.commit.message -split "`r?`n")[0] })
+            [array]::Reverse($log)   # newest first, like git log
+            return New-Result Behind '' $cmp.ahead_by $log
+        }
+        catch { }   # a version GitHub does not know: treated as unknown, below
+    }
+    # A zip from the GitHub page, or a copy set up before updates existed.
+    New-Result Behind 'version unknown' 1 @('This copy does not record which version it is. Updating brings it to the latest and keeps track from then on.')
+}
+
+function Invoke-WebUpdate {
+    $tmp = Join-Path ([IO.Path]::GetTempPath()) ("dat-file-tools-" + [guid]::NewGuid().ToString('N'))
+    try {
+        $latest = (Invoke-GitHubApi "commits/$branch").sha
+        $zip = "$tmp.zip"
+        Invoke-WebRequest -Uri "https://codeload.github.com/$repo/zip/$latest" -OutFile $zip -UseBasicParsing -TimeoutSec 60
+        Expand-Archive -LiteralPath $zip -DestinationPath $tmp
+        $src = @(Get-ChildItem -LiteralPath $tmp -Directory)[0].FullName
+        if (-not (Test-Path -LiteralPath (Join-Path $src 'Install-ContextMenu.ps1'))) { throw 'the download does not look like dat-file-tools' }
+        # ponytail: copies over, never deletes - a file removed upstream stays
+        # behind here. Harmless for scripts nothing calls; mirror if that changes.
+        $null = & robocopy.exe $src $root /E /R:1 /W:1 /NFL /NDL /NJH /NJS /NP
+        if ($LASTEXITCODE -ge 8) { throw "copying into $root failed (robocopy exit $LASTEXITCODE)" }
+        Set-Content -LiteralPath $versionFile -Value $latest -Encoding ascii
+    }
+    catch { return New-Result Failed "update failed: $($_.Exception.Message)" }
+    finally { Remove-Item -LiteralPath $tmp, "$tmp.zip" -Recurse -Force -ErrorAction SilentlyContinue }
+    New-Result Updated (Invoke-Reinstall)
+}
+
+# ---------------- a clone: git ----------------
+
 function Get-UpdateStatus {
-    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return New-Result Skipped 'git is not installed' }
-    if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) { return New-Result Skipped "$root is not a git clone" }
+    if (-not $isClone) { return Get-WebUpdateStatus }
+    if (-not (Get-Command git -ErrorAction SilentlyContinue)) { return New-Result Skipped 'this is a git clone but git is not installed' }
     try { $null = Invoke-Git @('fetch', '--quiet', 'origin', $branch) }
     catch { return New-Result Skipped "could not reach GitHub ($($_.Exception.Message))" }
 
@@ -84,6 +150,7 @@ function Get-UpdateStatus {
 }
 
 function Invoke-Update {
+    if (-not $isClone) { return Invoke-WebUpdate }
     $current = Invoke-Git @('rev-parse', '--abbrev-ref', 'HEAD')
     if ($current -ne $branch) {
         return New-Result Failed "$root is on branch '$current', not '$branch'. Switch it to $branch to update."
@@ -96,14 +163,7 @@ function Invoke-Update {
     catch { return New-Result Failed $_.Exception.Message }
     $changed = @((Invoke-Git @('diff', '--name-only', $before, 'HEAD')) -split "`r?`n")
 
-    $reason = ''
-    if ($changed -match '(^|/)(Un)?[Ii]nstall-ContextMenu\.ps1$') {
-        try {
-            $null = & (Join-Path $root 'Install-ContextMenu.ps1') *>&1
-            $reason = 'Right-click entries reinstalled.'
-        }
-        catch { $reason = "Reinstalling the right-click entries failed: $($_.Exception.Message). Run Install-ContextMenu.ps1." }
-    }
+    $reason = if ($changed -match '(^|/)(Un)?[Ii]nstall-ContextMenu\.ps1$') { Invoke-Reinstall } else { '' }
     New-Result Updated $reason
 }
 

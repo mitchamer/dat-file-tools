@@ -52,14 +52,28 @@ that opens `Launch-DatFileTools.ps1`: pick or drop a file or folder, then click 
 tool. Each tool opens in its own window, the same as it does from the right-click
 menu, and asks for anything you left out.
 
-Run from a git clone, the tools keep themselves current. The launcher checks
-GitHub every time it opens and shows an **Update now** banner when this copy is
-behind. Each tool checks at most once a day when it starts and offers the same
-update; unattended runs print a warning instead of asking. An update is
-`git pull --ff-only` on `main`. It is refused, with the reason, when the folder
-has local edits or is on another branch, and the right-click entries are
-reinstalled when an update changes them. With no git, no clone or no network,
-the check skips silently. `Check-ForUpdates.ps1` runs the same check by hand.
+The tools keep themselves current. The launcher checks GitHub every time it
+opens and shows an **Update now** banner when this copy is behind. Each tool
+checks at most once a day when it starts and offers the same update; unattended
+runs print a warning instead of asking. With no network the check skips
+silently. `Check-ForUpdates.ps1` runs the same check by hand.
+
+- **Downloaded as a zip (no git needed):** the update downloads the latest
+  version from GitHub and copies it over the folder, then reinstalls the
+  right-click entries. A `.version` file records which version is installed; a
+  copy without one is offered an update the first time. Edits to the tool
+  scripts are overwritten. Data files are never touched.
+- **A git clone:** the update is `git pull --ff-only` on `main`. It is refused,
+  with the reason, when the folder has local edits or is on another branch.
+
+### Installing without admin rights
+
+Nothing here needs admin. Put the folder anywhere you can write to. The usual
+no-admin place is `%LOCALAPPDATA%\Programs\dat-file-tools`, which is also where
+per-user apps such as VS Code install. Then run `Install-ContextMenu.ps1`: the
+right-click entries go under your own user (HKCU) and the shortcut into your own
+Start menu. Avoid `C:\Program Files`, which needs admin and blocks updates, and
+avoid OneDrive or a network share, where updates and right-clicks get slow.
 
 ## Quick start
 
