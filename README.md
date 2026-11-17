@@ -45,6 +45,22 @@ one destructive switch — off by default.
 What each one can specifically get wrong is documented in its own README. Read
 that section before a first run — it is short, and it is the part that matters.
 
+## Launcher and updates
+
+`Install-ContextMenu.ps1` also adds a Start-menu shortcut, **DAT File Tools**,
+that opens `Launch-DatFileTools.ps1`: pick or drop a file or folder, then click a
+tool. Each tool opens in its own window, the same as it does from the right-click
+menu, and asks for anything you left out.
+
+Run from a git clone, the tools keep themselves current. The launcher checks
+GitHub every time it opens and shows an **Update now** banner when this copy is
+behind. Each tool checks at most once a day when it starts and offers the same
+update; unattended runs print a warning instead of asking. An update is
+`git pull --ff-only` on `main`. It is refused, with the reason, when the folder
+has local edits or is on another branch, and the right-click entries are
+reinstalled when an update changes them. With no git, no clone or no network,
+the check skips silently. `Check-ForUpdates.ps1` runs the same check by hand.
+
 ## Quick start
 
 Clone or download, then:
@@ -82,6 +98,8 @@ picker for the tree to scan.
 ## Layout
 
 ```
+Launch-DatFileTools.ps1  the launcher window
+Check-ForUpdates.ps1     the update check every tool and the launcher call
 combine-dat-files/    Combine DAT files, Combine Affinity Files, context-menu installers, docs
 decimate/             the thinning tool, its tests, and its docs
 fix-timestamps/       the timestamp normaliser, its context-menu installer, tests and docs
