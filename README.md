@@ -45,6 +45,20 @@ one destructive switch — off by default.
 What each one can specifically get wrong is documented in its own README. Read
 that section before a first run — it is short, and it is the part that matters.
 
+## Install (no git, no admin)
+
+Paste into PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mitchamer/dat-file-tools/main/Install-DatFileTools.ps1 | iex
+```
+
+It puts the latest version in `%LOCALAPPDATA%\Programs\dat-file-tools`, adds the
+right-click entries and a **DAT File Tools** Start-menu shortcut, and opens the
+launcher. To install somewhere else, run `$env:DAT_FILE_TOOLS_DIR = 'D:\Tools\dat-file-tools'`
+first. Running it again updates that copy, and after that the tools keep
+themselves current (below).
+
 ## Launcher and updates
 
 `Install-ContextMenu.ps1` also adds a Start-menu shortcut, **DAT File Tools**,
@@ -112,6 +126,7 @@ picker for the tree to scan.
 ## Layout
 
 ```
+Install-DatFileTools.ps1 the one-line first-time installer
 Launch-DatFileTools.ps1  the launcher window
 Check-ForUpdates.ps1     the update check every tool and the launcher call
 combine-dat-files/    Combine DAT files, Combine Affinity Files, context-menu installers, docs
