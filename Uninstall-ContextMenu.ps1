@@ -27,5 +27,12 @@ foreach ($u in $uninstallers) {
     catch { Write-Warning "Failed: $u`n  $_"; $failed += $u }
 }
 
+$programs = if ($AllUsers) { [Environment]::GetFolderPath('CommonPrograms') } else { [Environment]::GetFolderPath('Programs') }
+$shortcut = Join-Path $programs 'DAT File Tools.lnk'
+if (Test-Path -LiteralPath $shortcut) {
+    Remove-Item -LiteralPath $shortcut
+    Write-Host "`nRemoved Start-menu shortcut: $shortcut" -ForegroundColor Green
+}
+
 if ($failed) { exit 1 }
 Write-Host "`nRemoved context-menu entries for all $(@($uninstallers).Count) tools." -ForegroundColor Green

@@ -76,6 +76,19 @@ if (-not $AllUsers) {
     }
 }
 
+# Start-menu shortcut to the launcher. Overwritten each run, so it follows the folder.
+$programs = if ($AllUsers) { [Environment]::GetFolderPath('CommonPrograms') } else { [Environment]::GetFolderPath('Programs') }
+$lnkPath = Join-Path $programs 'DAT File Tools.lnk'
+$lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($lnkPath)
+# Windows PowerShell, not $PSHOME: run from PowerShell 7 that holds pwsh.exe instead.
+$lnk.TargetPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$lnk.Arguments = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$(Join-Path $root 'Launch-DatFileTools.ps1')`""
+$lnk.WorkingDirectory = $root
+$lnk.IconLocation = Join-Path $root 'combine-dat-files\CombineDatFiles.ico'
+$lnk.Description = 'Launcher for the DAT file tools'
+$lnk.Save()
+Write-Host "`nStart-menu shortcut: $lnkPath" -ForegroundColor Green
+
 Write-Host ''
 if ($r.Failed) {
     Write-Host "Installed $($r.Count - $r.Failed) of $($r.Count) tools; see warnings above." -ForegroundColor Yellow

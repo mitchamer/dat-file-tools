@@ -244,6 +244,15 @@ param(
     [string]$Encoding = 'Auto'
 )
 
+# Newer version of these tools on GitHub? Checked at most once a day, and a
+# no-op outside a git clone or off the network. After an update the new
+# version is run instead of this one. Never stops the tool.
+$updateCheck = if ($PSScriptRoot) { Join-Path $PSScriptRoot '..\Check-ForUpdates.ps1' }
+if ($updateCheck -and (Test-Path -LiteralPath $updateCheck)) {
+    try { $update = & $updateCheck -Daily -CheckOnly:($Unattended) } catch { $update = $null }
+    if ($update.Status -eq 'Updated') { & $PSCommandPath @PSBoundParameters; return }
+}
+
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
