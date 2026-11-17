@@ -1693,9 +1693,12 @@ function Get-Toa5EnvironmentFields {
 # for automatic collection, local manual downloads and remote manual collections.
 # The date separator is - or _, the time separator is optional (LoggerNet writes
 # a bare HHmm), and a trailing _N is the counter LoggerNet adds when two
-# collections land in the same minute. Matched against the name WITHOUT extension.
-# A function, not a variable, because the tests load functions only.
-function Get-StampSuffixPattern { '_(?<stamp>\d{4}[-_]\d{2}[-_]\d{2}(?:[T_]\d{2}[-._]?\d{2}(?:[-._]?\d{2})?)?)(?:_(?<seq>\d+))?$' }
+# collections land in the same minute. A trailing " (N)" is the copy number a
+# browser or Explorer adds when the name already exists in the folder
+# (_2026-11-16T10-39 (1)); it orders the same way as _N. Matched against the
+# name WITHOUT extension. A function, not a variable, because the tests load
+# functions only.
+function Get-StampSuffixPattern { '_(?<stamp>\d{4}[-_]\d{2}[-_]\d{2}(?:[T_]\d{2}[-._]?\d{2}(?:[-._]?\d{2})?)?)(?:_(?<seq>\d+))?(?: \((?<seq>\d+)\))?$' }
 
 function Get-DuplicateGroups {
     <#

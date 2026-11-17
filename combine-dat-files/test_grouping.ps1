@@ -219,6 +219,18 @@ $results += Test-Case -Name 'mixed_separator_not_a_stamp' -Build {
     New-Toa5 (Join-Path $d 'Site_Status_2026-10_11.dat') 'Site' '1' 'Status'
 } -Expected @{} -ExpectWarn
 
+# 12. A browser/Explorer copy suffix " (N)" after the stamp (TNL-22-42 SAA):
+#     still a download, so it merges into the collected file instead of
+#     looking like a second collected file. (1) orders after the bare stamp.
+$results += Test-Case -Name 'copy_number_after_stamp_is_download' -Build {
+    param($d)
+    New-Toa5 (Join-Path $d 'TNL-22-42 SAA_SAA1_DATA.dat') 'CR350' '9497' 'SAA1_DATA'
+    New-Toa5 (Join-Path $d 'TNL-22-42 SAA_SAA1_DATA_2026-11-16T10-39 (1).dat') 'CR350' '9497' 'SAA1_DATA'
+    New-Toa5 (Join-Path $d 'TNL-22-42 SAA_SAA1_DATA_2026-11-16T10-39.dat') 'CR350' '9497' 'SAA1_DATA'
+} -Expected @{
+    'TNL-22-42 SAA_SAA1_DATA.dat' = 'TNL-22-42 SAA_SAA1_DATA_2026-11-16T10-39.dat,TNL-22-42 SAA_SAA1_DATA_2026-11-16T10-39 (1).dat'
+}
+
 Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue
 $failed = @($results | Where-Object { -not $_ }).Count
 Write-Host ""
